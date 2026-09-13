@@ -14,6 +14,22 @@ export const TEST_FAILPOINTS = [
   "after_session_create_before_catalog_ready",
   "after_catalog_session_repair",
   "after_catalog_replacement_before_repair",
+  "after_provider_lifecycle_prepare",
+  "after_provider_file_effect",
+  "after_provider_file_observed",
+  "after_provider_lifecycle_terminal_before_ack",
+  "after_provider_stage_cleanup",
+  "after_provider_stage_temp_flush",
+  "after_provider_credential_temp_flush",
+  "after_provider_stage_commit",
+  "before_provider_provisioning_ref_return",
+  "after_recovery_admission",
+  "after_recovery_prepare",
+  "after_environment_run_acceptance_before_request",
+  "after_provider_stage_delete_before_flush",
+  "after_provider_credential_rename_before_flush",
+  "after_provider_credential_unlink_before_flush",
+  "after_provider_stage_rename_before_flush",
 ] as const;
 
 export type TestFailpointName = (typeof TEST_FAILPOINTS)[number];
@@ -32,6 +48,7 @@ type TestFailpointSelector =
       readonly runId: string;
     }
   | { readonly kind: "creation-command"; readonly commandId: string }
+  | { readonly kind: "provider-command"; readonly commandId: string }
   | { readonly kind: "catalog-global" };
 
 export interface TestFailpointController {
@@ -65,6 +82,22 @@ const selectorKindByFailpoint = {
   after_session_create_before_catalog_ready: "creation-command",
   after_catalog_session_repair: "session",
   after_catalog_replacement_before_repair: "catalog-global",
+  after_provider_lifecycle_prepare: "provider-command",
+  after_provider_file_effect: "provider-command",
+  after_provider_file_observed: "provider-command",
+  after_provider_lifecycle_terminal_before_ack: "provider-command",
+  after_provider_stage_cleanup: "provider-command",
+  after_provider_stage_delete_before_flush: "provider-command",
+  after_provider_stage_temp_flush: "provider-command",
+  after_provider_credential_temp_flush: "provider-command",
+  after_provider_stage_commit: "provider-command",
+  before_provider_provisioning_ref_return: "provider-command",
+  after_recovery_admission: "provider-command",
+  after_recovery_prepare: "provider-command",
+  after_environment_run_acceptance_before_request: "provider-command",
+  after_provider_credential_rename_before_flush: "provider-command",
+  after_provider_credential_unlink_before_flush: "provider-command",
+  after_provider_stage_rename_before_flush: "provider-command",
 } as const satisfies Readonly<Record<TestFailpointName, TestFailpointSelector["kind"]>>;
 
 function invalidSelector(name: TestFailpointName): never {
@@ -102,6 +135,7 @@ function parseSelector(
 
   switch (selectorKindByFailpoint[name]) {
     case "creation-command":
+    case "provider-command":
       if (
         commandId === undefined ||
         sessionId !== undefined ||
@@ -110,7 +144,7 @@ function parseSelector(
       ) {
         invalidSelector(name);
       }
-      return { kind: "creation-command", commandId };
+      return { kind: selectorKindByFailpoint[name], commandId };
     case "catalog-global":
       if (
         catalogGlobal !== "1" ||
@@ -168,6 +202,7 @@ function selectorMatches(
     case "run":
       return fields.sessionId === selector.sessionId && fields.runId === selector.runId;
     case "creation-command":
+    case "provider-command":
       return fields.commandId === selector.commandId;
     case "catalog-global":
       return true;

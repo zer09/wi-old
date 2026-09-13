@@ -20,10 +20,15 @@ import {
   SessionIdSchema,
   ToolCallIdSchema,
 } from "./ids.js";
+import {
+  RunProviderSelectionSnapshotSchema,
+  SessionProviderDefaultSchema,
+} from "./providers.js";
 import { ApprovalResolutionSchema, ToolEffectClassSchema } from "./tools.js";
 
 export const SESSION_EVENT_TYPES = [
   "session.created",
+  "session.provider_default.set",
   "user.message.appended",
   "run.created",
   "run.started",
@@ -184,6 +189,14 @@ export const SessionCreatedEventSchema = eventMessage(
   }),
 );
 
+export const SessionProviderDefaultSetEventSchema = eventMessage(
+  "session.provider_default.set",
+  z.strictObject({
+    eventVersion: VersionSchema,
+    default: SessionProviderDefaultSchema,
+  }),
+);
+
 export const UserMessageAppendedEventSchema = eventMessage(
   "user.message.appended",
   z.strictObject({
@@ -194,7 +207,15 @@ export const UserMessageAppendedEventSchema = eventMessage(
   }),
 );
 
-export const RunCreatedEventSchema = eventMessage("run.created", z.strictObject(runData));
+const RunCreatedDataSchema = z.discriminatedUnion("eventVersion", [
+  z.strictObject(runData),
+  z.strictObject({
+    eventVersion: z.literal(2),
+    runId: RunIdSchema,
+    providerSelection: RunProviderSelectionSnapshotSchema,
+  }),
+]);
+export const RunCreatedEventSchema = eventMessage("run.created", RunCreatedDataSchema);
 export const RunStartedEventSchema = eventMessage("run.started", z.strictObject(runData));
 export const RunWaitingForUserEventSchema = eventMessage(
   "run.waiting_for_user",
@@ -356,6 +377,7 @@ const BrowserToolExecutionOutcomeUnknownEventSchema = eventMessage(
 
 export const SessionEventSchema = z.discriminatedUnion("eventType", [
   SessionCreatedEventSchema,
+  SessionProviderDefaultSetEventSchema,
   UserMessageAppendedEventSchema,
   RunCreatedEventSchema,
   RunStartedEventSchema,
@@ -387,6 +409,7 @@ export const SessionEventSchema = z.discriminatedUnion("eventType", [
 
 export const BrowserSessionEventSchema = z.discriminatedUnion("eventType", [
   SessionCreatedEventSchema,
+  SessionProviderDefaultSetEventSchema,
   UserMessageAppendedEventSchema,
   RunCreatedEventSchema,
   RunStartedEventSchema,

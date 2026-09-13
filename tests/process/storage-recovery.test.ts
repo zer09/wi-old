@@ -198,7 +198,7 @@ describe("storage crash windows", () => {
 
     const storage = restart(homeDirectory);
     const session = await storage.openSession("ses_v1Populated");
-    await expect(session.getManifest()).resolves.toMatchObject({ schemaVersion: 4 });
+    await expect(session.getManifest()).resolves.toMatchObject({ schemaVersion: 5 });
     await expect(session.getToolExecutionsForStep("step_v1Original")).resolves.toEqual([
       expect.objectContaining({ callId: "call_v1Existing", state: "completed" }),
     ]);
@@ -258,7 +258,7 @@ describe("storage crash windows", () => {
     await expect(runSessionV1Fixture(homeDirectory, "inspect-conflict")).resolves.toBe(0);
   });
 
-  it("migrates an exact retained session v3 to v4 without changing durable state", async () => {
+  it("migrates an exact retained session v3 to the current schema without changing durable state", async () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), "wi-storage-process-"));
     homes.push(homeDirectory);
     await runSessionV3Fixture(homeDirectory, "seed-valid");
@@ -273,7 +273,7 @@ describe("storage crash windows", () => {
     const storage = restart(homeDirectory);
     const session = await storage.openSession("ses_v3Retained");
     await expect(session.getManifest()).resolves.toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       lastEventSequence: 12,
       title: "Retained session v3",
     });
@@ -330,18 +330,18 @@ describe("storage crash windows", () => {
     managers.splice(managers.indexOf(storage), 1);
 
     const after = await sessionV3Snapshot(homeDirectory);
-    expect(after.userVersion).toBe(4);
+    expect(after.userVersion).toBe(5);
     expect(after.manifest).toEqual([
-      expect.objectContaining({ schema_version: 4, last_event_sequence: 12 }),
+      expect.objectContaining({ schema_version: 5, last_event_sequence: 12 }),
     ]);
     expect(after.events).toEqual(before.events);
     expect(after.creationProvenance).toEqual([]);
-    await runSessionV3Fixture(homeDirectory, "verify-v4");
+    await runSessionV3Fixture(homeDirectory, "verify-v5");
 
     const repeated = restart(homeDirectory);
     await expect(
       (await repeated.openSession("ses_v3Retained")).getManifest(),
-    ).resolves.toMatchObject({ schemaVersion: 4 });
+    ).resolves.toMatchObject({ schemaVersion: 5 });
     await repeated.close();
     managers.splice(managers.indexOf(repeated), 1);
     await expect(sessionV3Snapshot(homeDirectory)).resolves.toEqual(after);
@@ -371,12 +371,12 @@ describe("storage crash windows", () => {
     await runSessionV3Fixture(homeDirectory, "drop-failure");
     const recoveredStorage = restart(homeDirectory, "force");
     const recoveredSession = await recoveredStorage.openSession("ses_v3Retained");
-    await expect(recoveredSession.getManifest()).resolves.toMatchObject({ schemaVersion: 4 });
+    await expect(recoveredSession.getManifest()).resolves.toMatchObject({ schemaVersion: 5 });
     await recoveredStorage.close();
     managers.splice(managers.indexOf(recoveredStorage), 1);
 
     const recovered = await sessionV3Snapshot(homeDirectory);
-    expect(recovered.userVersion).toBe(4);
+    expect(recovered.userVersion).toBe(5);
     expect(recovered.events).toEqual(before.events);
     expect(recovered.creationProvenance).toEqual([]);
   }, 20_000);

@@ -103,11 +103,18 @@ export const ProviderRequestSchema = z
   });
 export type ProviderRequest = z.infer<typeof ProviderRequestSchema>;
 
+export interface IssuedProviderCredential {
+  readonly type: "api_key";
+  readonly apiKey: string;
+}
+
 export interface ProviderContext {
   readonly sessionId: string;
   /** Zero for the first attempt; incremented only by a permitted pre-output retry. */
   readonly attempt: number;
   readonly now: () => number;
+  /** Request-scoped secret issued by backend credential policy; never persist or log it. */
+  readonly credential?: IssuedProviderCredential;
 }
 
 export function decodeProviderConfiguration(value: unknown): z.infer<typeof CanonicalJsonValueSchema> {

@@ -227,6 +227,29 @@ describe("BrowserCommandJournal", () => {
     expect(storage.getItem(COMMAND_JOURNAL_STORAGE_KEY)).toBeNull();
   });
 
+  it("uses canonical nested command equality for unresolved command reuse", () => {
+    const storage = new MemoryStorage();
+    const journal = new BrowserCommandJournal(storage, "owner-a");
+    const first = {
+      v: 1,
+      kind: "command",
+      commandId: "cmd_journalCanonicalInput",
+      sessionId: "ses_journal",
+      method: "input.respond",
+      params: { inputId: "input_journal", value: { outer: { a: 1, b: 2 } } },
+    } as const;
+    const reordered = {
+      ...first,
+      params: { inputId: "input_journal", value: { outer: { b: 2, a: 1 } } },
+    } as const;
+    journal.addCommand(first);
+    expect(() => journal.addCommand(reordered)).not.toThrow();
+    expect(() => journal.addCommand({
+      ...reordered,
+      params: { inputId: "input_journal", value: { outer: { b: 3, a: 1 } } },
+    })).toThrow(/cannot be reused with different content/u);
+  });
+
   it("leaves the prior state intact when a new journal mutation is rejected", () => {
     const storage = new MemoryStorage();
     const journal = new BrowserCommandJournal(storage, "owner-a", {

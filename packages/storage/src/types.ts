@@ -5,17 +5,31 @@ import {
   CanonicalJsonValueSchema,
   CommandIdSchema,
   CommandMethodSchema,
+  CapabilitiesVersionSchema,
   DiagnosticIdSchema,
+  EnvelopeIdSchema,
+  EnvironmentVariableNameSchema,
   EventIdSchema,
   InputIdSchema,
   MessageIdSchema,
   PartIdSchema,
   ProjectIdSchema,
+  ProviderAuthModeSchema,
+  ProviderCapabilitiesSnapshotSchema,
+  ProviderConnectionIdSchema,
+  ProviderIdSchema,
+  ProviderConnectionSafeViewSchema,
+  ProviderIdentitySchema,
+  ProviderLifecycleOperationKindSchema,
   ProviderStepIdSchema,
   ProviderStepStateSchema,
+  ProvisioningIdSchema,
+  RecoveryEpochIdSchema,
   RunIdSchema,
+  RunProviderSelectionSnapshotSchema,
   RunStateSchema,
   SafeDiagnosticMessageSchema,
+  SessionProviderDefaultSchema,
   SessionEventSchema,
   SessionEventTypeSchema,
   SessionIdSchema,
@@ -25,8 +39,8 @@ import {
   ToolExecutionStateSchema,
 } from "@wi/protocol";
 
-export const CATALOG_SCHEMA_VERSION = 5;
-export const SESSION_SCHEMA_VERSION = 4;
+export const CATALOG_SCHEMA_VERSION = 6;
+export const SESSION_SCHEMA_VERSION = 5;
 export const SESSION_FORMAT_VERSION = 1;
 
 export const HashSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -99,6 +113,158 @@ export const GlobalCommandReservationSchema = z.strictObject({
   duplicate: z.boolean(),
 });
 export type GlobalCommandReservation = z.infer<typeof GlobalCommandReservationSchema>;
+
+export const InternalCredentialRefSchema = z.string().regex(/^credref_[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/u);
+export const InternalStagingRefSchema = z.string().regex(/^stage_[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/u);
+
+export const ProviderConnectionRecordSchema = ProviderConnectionSafeViewSchema.extend({
+  credentialInternalRef: z.union([InternalCredentialRefSchema, z.null()]),
+  envelopeId: z.union([EnvelopeIdSchema, z.null()]),
+});
+export type ProviderConnectionRecord = z.infer<typeof ProviderConnectionRecordSchema>;
+
+export const ProviderCatalogStateSchema = z.strictObject({
+  catalogRevision: z.number().int().nonnegative().safe(),
+  rebuiltEpoch: z.number().int().nonnegative().safe(),
+  recoveryActive: z.boolean(),
+});
+export type ProviderCatalogState = z.infer<typeof ProviderCatalogStateSchema>;
+
+export const ProviderLifecycleOperationPhaseSchema = z.enum([
+  "validating",
+  "prepared",
+  "file_observed",
+  "succeeded",
+  "failed",
+  "failed_after_effect",
+]);
+export const ProviderCredentialFileIdentitySchema = z.strictObject({
+  device: z.string().regex(/^\d{1,32}$/u),
+  inode: z.string().regex(/^\d{1,32}$/u),
+  size: z.string().regex(/^\d{1,32}$/u),
+  ctimeNs: z.string().regex(/^\d{1,32}$/u),
+});
+export type ProviderCredentialFileIdentity = z.infer<typeof ProviderCredentialFileIdentitySchema>;
+
+export const ProviderLifecycleOperationRecordSchema = z.strictObject({
+  commandId: CommandIdSchema,
+  commandMethod: z.string().min(1).max(128),
+  contentHash: HashSchema,
+  operationKind: ProviderLifecycleOperationKindSchema,
+  targetConnectionId: ProviderConnectionIdSchema,
+  expectedLifecycleRevision: z.union([z.number().int().positive().safe(), z.null()]),
+  expectedGeneration: z.union([z.number().int().positive().safe(), z.null()]),
+  reservedLifecycleRevision: z.number().int().positive().safe(),
+  reservedGeneration: z.number().int().positive().safe(),
+  ownerKey: z.string().min(1).max(256),
+  provisioningId: z.union([ProvisioningIdSchema, z.null()]),
+  stagingInternalRef: z.union([InternalStagingRefSchema, z.null()]),
+  stagingFileIdentity: z.union([ProviderCredentialFileIdentitySchema, z.null()]),
+  credentialBackendKind: z.enum(["file", "environment"]),
+  credentialInternalRef: z.union([InternalCredentialRefSchema, z.null()]),
+  envelopeId: z.union([EnvelopeIdSchema, z.null()]),
+  recoveryEpochId: z.union([RecoveryEpochIdSchema, z.null()]),
+  expectedSafeMetadata: z.union([CanonicalJsonValueSchema, z.null()]),
+  recoveryFileIdentity: z.union([ProviderCredentialFileIdentitySchema, z.null()]),
+  phase: ProviderLifecycleOperationPhaseSchema,
+  result: z.union([CanonicalJsonValueSchema, z.null()]),
+  failureCode: NullableStringSchema,
+  failureMessage: NullableDiagnosticMessageSchema,
+  diagnosticId: z.union([DiagnosticIdSchema, z.null()]),
+  createdAtMs: TimestampMsSchema,
+  updatedAtMs: TimestampMsSchema,
+});
+export type ProviderLifecycleOperationRecord = z.infer<typeof ProviderLifecycleOperationRecordSchema>;
+
+export const ProviderCapabilityRecordSchema = z.strictObject({
+  connectionId: ProviderConnectionIdSchema,
+  capabilitiesVersion: CapabilitiesVersionSchema,
+  snapshot: ProviderCapabilitiesSnapshotSchema,
+  createdAtMs: TimestampMsSchema,
+});
+export type ProviderCapabilityRecord = z.infer<typeof ProviderCapabilityRecordSchema>;
+
+export const EnvironmentConnectionRegistrationSchema = z.strictObject({
+  commandId: CommandIdSchema,
+  contentHash: HashSchema,
+  connectionId: ProviderConnectionIdSchema,
+  providerId: z.literal("openai_platform"),
+  authMode: z.literal("api_key"),
+  displayName: z.string().min(1).max(256),
+  variableName: EnvironmentVariableNameSchema,
+  identity: ProviderIdentitySchema,
+  identityClaim: z.union([
+    z.strictObject({
+      identityKey: z.string().min(1).max(1_024),
+      stableKind: z.enum(["subject", "account", "project"]),
+      stableValue: z.string().min(1).max(256),
+      workspacePresence: z.enum(["unknown", "none", "value"]),
+      workspaceValue: z.string().max(256),
+    }),
+    z.null(),
+  ]),
+  initialStatus: z.enum(["ready", "unavailable"]),
+  createdAtMs: TimestampMsSchema,
+});
+export type EnvironmentConnectionRegistration = z.infer<typeof EnvironmentConnectionRegistrationSchema>;
+
+export const FileConnectionReservationSchema = z.strictObject({
+  commandId: CommandIdSchema,
+  commandMethod: z.literal("providerConnection.file.create"),
+  contentHash: HashSchema,
+  connectionId: ProviderConnectionIdSchema,
+  providerId: z.literal("openai_platform"),
+  authMode: z.literal("api_key"),
+  displayName: z.string().min(1).max(256),
+  identity: ProviderIdentitySchema,
+  credentialInternalRef: InternalCredentialRefSchema,
+  targetEnvelopeId: EnvelopeIdSchema,
+  provisioningId: ProvisioningIdSchema,
+  stagingInternalRef: InternalStagingRefSchema,
+  stagingFileIdentity: ProviderCredentialFileIdentitySchema,
+  createdAtMs: TimestampMsSchema,
+});
+export type FileConnectionReservation = z.infer<typeof FileConnectionReservationSchema>;
+
+export const RecoveryAdmissionSchema = z.strictObject({
+  commandId: CommandIdSchema,
+  commandMethod: z.literal("providerConnection.recover"),
+  contentHash: HashSchema,
+  connectionId: ProviderConnectionIdSchema,
+  generation: z.number().int().positive().safe(),
+  recoveryEpochId: RecoveryEpochIdSchema,
+  expectedSafeMetadata: CanonicalJsonValueSchema,
+  createdAtMs: TimestampMsSchema,
+});
+export type RecoveryAdmission = z.infer<typeof RecoveryAdmissionSchema>;
+
+export const RecoveredConnectionReservationSchema = z.strictObject({
+  commandId: CommandIdSchema,
+  commandMethod: z.literal("providerConnection.recover"),
+  contentHash: HashSchema,
+  connectionId: ProviderConnectionIdSchema,
+  providerId: ProviderIdSchema,
+  authMode: ProviderAuthModeSchema,
+  displayName: z.string().min(1).max(256),
+  identity: ProviderIdentitySchema,
+  identityClaim: z.union([
+    z.strictObject({
+      identityKey: z.string().min(1).max(1_024),
+      stableKind: z.enum(["subject", "account", "project"]),
+      stableValue: z.string().min(1).max(256),
+      workspacePresence: z.enum(["unknown", "none", "value"]),
+      workspaceValue: z.string().max(256),
+    }),
+    z.null(),
+  ]),
+  generation: z.number().int().positive().safe(),
+  credentialInternalRef: InternalCredentialRefSchema,
+  envelopeId: EnvelopeIdSchema,
+  recoveryEpochId: RecoveryEpochIdSchema,
+  recoveryFileIdentity: ProviderCredentialFileIdentitySchema,
+  createdAtMs: TimestampMsSchema,
+});
+export type RecoveredConnectionReservation = z.infer<typeof RecoveredConnectionReservationSchema>;
 
 export const SessionCatalogProjectionSchema = z.strictObject({
   updatedAtMs: TimestampMsSchema,
@@ -194,6 +360,7 @@ export const RunProjectionSchema = z.strictObject({
   state: RunStateSchema,
   providerId: z.string().min(1),
   providerConfig: CanonicalJsonValueSchema,
+  providerSelection: RunProviderSelectionSnapshotSchema.nullable().optional(),
   createdAtMs: TimestampMsSchema,
   startedAtMs: NullableTimestampSchema,
   completedAtMs: NullableTimestampSchema,
@@ -345,6 +512,12 @@ export const PendingInteractionsCancellationProjectionSchema = z.strictObject({
   cancelledAtMs: TimestampMsSchema,
 });
 
+export const SessionProviderDefaultProjectionSchema = z.strictObject({
+  kind: z.literal("session.providerDefault.put"),
+  default: SessionProviderDefaultSchema,
+  eventId: EventIdSchema,
+});
+
 export const ProjectionMutationSchema = z.discriminatedUnion("kind", [
   RunProjectionSchema,
   RunStateProjectionSchema,
@@ -359,6 +532,7 @@ export const ProjectionMutationSchema = z.discriminatedUnion("kind", [
   PendingInputProjectionSchema,
   InputResolutionProjectionSchema,
   PendingInteractionsCancellationProjectionSchema,
+  SessionProviderDefaultProjectionSchema,
 ]);
 export type ProjectionMutation = z.infer<typeof ProjectionMutationSchema>;
 
@@ -468,6 +642,7 @@ export const RunRecordSchema = z.strictObject({
   state: RunStateSchema,
   providerId: z.string().min(1),
   providerConfig: CanonicalJsonValueSchema,
+  providerSelection: z.union([RunProviderSelectionSnapshotSchema, z.null()]).optional(),
   createdAtMs: TimestampMsSchema,
   startedAtMs: NullableTimestampSchema,
   completedAtMs: NullableTimestampSchema,
@@ -477,6 +652,13 @@ export const RunRecordSchema = z.strictObject({
   activeProviderStepId: NullableStringSchema,
 });
 export type RunRecord = z.infer<typeof RunRecordSchema>;
+
+export const SessionProviderDefaultRecordSchema = z.strictObject({
+  default: SessionProviderDefaultSchema,
+  updatedSequence: z.number().int().positive().safe(),
+  eventId: EventIdSchema,
+});
+export type SessionProviderDefaultRecord = z.infer<typeof SessionProviderDefaultRecordSchema>;
 
 export const PendingApprovalRecordSchema = z.strictObject({
   approvalId: ApprovalIdSchema,

@@ -1,10 +1,16 @@
-import type { RunState, SessionEvent } from "@wi/protocol";
+import type {
+  RunProviderSelectionSnapshot,
+  RunState,
+  SessionEvent,
+  SessionProviderDefault,
+} from "@wi/protocol";
 
 export type BrowserSessionStatus = "loading" | "replaying" | "live" | "gap" | "error";
 
 export interface BrowserRunState {
   readonly runId: string;
   readonly state: RunState;
+  readonly providerSelection?: RunProviderSelectionSnapshot | null;
 }
 
 export interface BrowserApproval {
@@ -38,6 +44,7 @@ export interface BrowserSessionState {
   readonly sessionId: string;
   readonly title: string;
   readonly lastMessagePreview: string | null;
+  readonly providerDefault?: SessionProviderDefault | null;
   readonly lastAppliedSequence: number;
   readonly status: BrowserSessionStatus;
   readonly timeline: readonly TimelineItem[];

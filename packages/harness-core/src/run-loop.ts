@@ -145,6 +145,7 @@ export class AgentRunLoop {
   readonly currentToolEffectClass: (toolName: string) => ToolEffectClass | null;
   private readonly storage: AgentRunStorage;
   private readonly provider: ProviderAdapter;
+  private readonly providerForRun: ((run: RunRecord) => ProviderAdapter | null) | undefined;
   private readonly registry: ToolRegistry;
   private readonly executor: ToolExecutor;
   private readonly ids: AgentRunLoopIds;
@@ -160,6 +161,7 @@ export class AgentRunLoop {
   constructor(options: {
     readonly storage: AgentRunStorage;
     readonly provider: ProviderAdapter;
+    readonly providerForRun?: (run: RunRecord) => ProviderAdapter | null;
     readonly registry: ToolRegistry;
     readonly executor: ToolExecutor;
     readonly ids: AgentRunLoopIds;
@@ -171,6 +173,7 @@ export class AgentRunLoop {
   }) {
     this.storage = options.storage;
     this.provider = options.provider;
+    this.providerForRun = options.providerForRun;
     this.registry = options.registry;
     this.currentToolEffectClass =
       (toolName) => this.registry.get(toolName)?.effectClass ?? null;
@@ -213,6 +216,7 @@ export class AgentRunLoop {
     code: ErrorCode,
     error: unknown,
     stepId: string | null,
+    providerId: string,
   ): string {
     const diagnosticId = this.ids.diagnosticId();
     try {
@@ -222,7 +226,7 @@ export class AgentRunLoop {
         sessionId: context.sessionId,
         runId: context.runId,
         stepId,
-        providerId: this.provider.id,
+        providerId,
         state,
         code,
         error,
@@ -266,28 +270,37 @@ export class AgentRunLoop {
     code: ErrorCode,
     error: unknown,
     diagnosticId?: string,
+    providerId = this.provider.id,
   ): RunTaskResult {
     return {
       state,
       code,
       message: safeRunFailureMessage(code),
-      diagnosticId: diagnosticId ?? this.reportFailure(context, state, code, error, null),
+      diagnosticId: diagnosticId ?? this.reportFailure(
+        context,
+        state,
+        code,
+        error,
+        null,
+        providerId,
+      ),
     };
   }
 
   private async execute(context: RunTaskContext): Promise<RunTaskResult> {
+    let selectedProviderId = this.provider.id;
     try {
-      const providerMatch = await this.storage.getRunProviderMatch(
-        context.runId,
-        this.provider.id,
-      );
-      if (providerMatch === "missing") {
+      const selectedRun = await this.storage.getRun(context.runId);
+      if (selectedRun === null) {
         throw new RunLoopFailure("session.not_found", "Run was not found.", false);
       }
-      if (providerMatch === "mismatch") {
+      selectedProviderId = selectedRun.providerId;
+      const provider = this.providerForRun?.(selectedRun) ??
+        (selectedRun.providerId === this.provider.id ? this.provider : null);
+      if (provider === null || provider.id !== selectedRun.providerId) {
         throw new RunLoopFailure(
-          "provider.protocol_error",
-          `Run selected another provider, but ${this.provider.id} was composed.`,
+          "provider.not_implemented",
+          "The selected provider adapter is not available.",
           false,
         );
       }
@@ -366,6 +379,7 @@ export class AgentRunLoop {
           context.runId,
           stepIndex,
           retryAttempt,
+          provider,
         );
         switch (outcome.kind) {
           case "final":
@@ -415,6 +429,7 @@ export class AgentRunLoop {
           error.code,
           error,
           error.diagnosticId,
+          selectedProviderId,
         );
       }
       if (isAborted(context.signal)) {
@@ -424,6 +439,7 @@ export class AgentRunLoop {
           "provider.cancelled",
           error,
           error instanceof RunLoopFailure ? error.diagnosticId : undefined,
+          selectedProviderId,
         );
       }
       if (error instanceof RunLoopFailure) {
@@ -433,9 +449,17 @@ export class AgentRunLoop {
           error.code,
           error,
           error.diagnosticId,
+          selectedProviderId,
         );
       }
-      return this.failureResult(context, "failed", "provider.protocol_error", error);
+      return this.failureResult(
+        context,
+        "failed",
+        "provider.protocol_error",
+        error,
+        undefined,
+        selectedProviderId,
+      );
     }
   }
 
@@ -443,12 +467,13 @@ export class AgentRunLoop {
     runId: string,
     stepId: string,
     stepIndex: number,
+    provider: ProviderAdapter,
   ): Promise<ProviderRequest> {
     const snapshot = await this.storage.getBoundedProviderRequestData({
       runId,
       stepId,
       stepIndex,
-      expectedProviderId: this.provider.id,
+      expectedProviderId: provider.id,
       maxProviderConfigBytes: PROVIDER_LIMITS.providerConfigMaxBytes,
       maxMessageTextBytes: PROVIDER_LIMITS.messageTextMaxBytes,
       maxToolNameBytes: PROVIDER_LIMITS.toolNameMaxBytes,
@@ -501,12 +526,13 @@ export class AgentRunLoop {
     runId: string,
     stepIndex: number,
     attempt: number,
+    provider: ProviderAdapter,
   ): Promise<StepOutcome> {
     const stepId = this.ids.stepId();
     const startedAtMs = context.now();
     let request: ProviderRequest;
     try {
-      request = await this.providerRequest(runId, stepId, stepIndex);
+      request = await this.providerRequest(runId, stepId, stepIndex, provider);
     } catch (error) {
       if (error instanceof RunLoopFailure) throw error;
       throw new RunLoopFailure(
@@ -628,7 +654,7 @@ export class AgentRunLoop {
 
     try {
       await context.scheduler.withProviderPermit(context.signal, async () => {
-        for await (const value of this.provider.stream(
+        for await (const value of provider.stream(
           request,
           { sessionId: context.sessionId, attempt, now: context.now },
           context.signal,
@@ -751,6 +777,7 @@ export class AgentRunLoop {
           code,
           context.signal.reason,
           "interrupted",
+          provider.id,
         );
         return {
           kind: "interrupted",
@@ -793,6 +820,7 @@ export class AgentRunLoop {
         code,
         error,
         stepState,
+        provider.id,
       );
       const message = safeRunFailureMessage(code);
       if (retryable) return { kind: "retry", code, message, diagnosticId };
@@ -821,6 +849,7 @@ export class AgentRunLoop {
         code,
         detail,
         "interrupted",
+        provider.id,
       );
       return {
         kind: "interrupted",
@@ -860,6 +889,7 @@ export class AgentRunLoop {
         code,
         acceptedTerminal.message,
         stepState,
+        provider.id,
       );
       const message = safeRunFailureMessage(code);
       if (retryable) return { kind: "retry", code, message, diagnosticId };
@@ -896,6 +926,7 @@ export class AgentRunLoop {
         code,
         error,
         stepState,
+        provider.id,
       );
       return {
         kind: stepState,
@@ -1044,6 +1075,7 @@ export class AgentRunLoop {
     code: ErrorCode,
     diagnosticError: unknown,
     stepState: "failed" | "interrupted",
+    providerId: string,
   ): Promise<string> {
     const atMs = context.now();
     const failureMessage = safeRunFailureMessage(code);
@@ -1053,6 +1085,7 @@ export class AgentRunLoop {
       code,
       diagnosticError,
       stepId,
+      providerId,
     );
     const staged = (await this.storage.getToolExecutionsForStep(stepId)).filter(
       (tool) => tool.state === "staged",

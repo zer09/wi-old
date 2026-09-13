@@ -320,6 +320,73 @@ function execute(operation: string, payload: unknown): unknown {
       repository.markRecoveryCandidate(input.sessionId);
       return null;
     }
+    case "catalog.getProviderCatalogState":
+      return repository.getProviderCatalogState();
+    case "catalog.setProviderCatalogRecoveryActive": {
+      const input = z.strictObject({ active: z.boolean() }).parse(payload);
+      return repository.setProviderCatalogRecoveryActive(input.active);
+    }
+    case "catalog.listProviderConnections":
+      return repository.listProviderConnections(payload);
+    case "catalog.getProviderConnection": {
+      const input = z.strictObject({ connectionId: z.string().min(1) }).parse(payload);
+      return repository.getProviderConnection(input.connectionId);
+    }
+    case "catalog.registerEnvironmentConnection":
+      return repository.registerEnvironmentConnection(payload);
+    case "catalog.admitProviderRecovery":
+      return repository.admitProviderRecovery(payload);
+    case "catalog.failProviderRecovery":
+      return repository.failProviderRecovery(payload);
+    case "catalog.failValidatingProviderRecoveries": {
+      const input = z.strictObject({ updatedAtMs: z.number().int().nonnegative().safe() }).parse(payload);
+      return repository.failValidatingProviderRecoveries(input.updatedAtMs);
+    }
+    case "catalog.reserveRecoveredProviderConnection":
+      return repository.reserveRecoveredProviderConnection(payload);
+    case "catalog.reserveFileProviderConnection":
+      return repository.reserveFileProviderConnection(payload);
+    case "catalog.prepareProviderLifecycle":
+      return repository.prepareProviderLifecycle(payload);
+    case "catalog.disableProviderConnection":
+      return repository.disableProviderConnection(payload);
+    case "catalog.observeProviderLifecycleEffect":
+      return repository.observeProviderLifecycleEffect(payload);
+    case "catalog.failOrphanedProviderLifecycle":
+      return repository.failOrphanedProviderLifecycle(payload);
+    case "catalog.completeProviderLifecycle":
+      return repository.completeProviderLifecycle(payload);
+    case "catalog.hasProviderMetadataCommand": {
+      const input = z.strictObject({ commandId: z.string() }).parse(payload);
+      return repository.hasProviderMetadataCommand(input.commandId);
+    }
+    case "catalog.getProviderLifecycleOperation": {
+      const input = z.strictObject({ commandId: z.string().min(1) }).parse(payload);
+      return repository.getProviderLifecycleOperation(input.commandId);
+    }
+    case "catalog.isProvisioningClaimActive": {
+      const input = z.strictObject({ provisioningId: z.string().min(1).max(128) }).parse(payload);
+      return repository.isProvisioningClaimActive(input.provisioningId);
+    }
+    case "catalog.markProviderStageCleaned": {
+      const input = z.strictObject({ stagingInternalRef: z.string().min(1).max(128) }).parse(payload);
+      repository.markProviderStageCleaned(input.stagingInternalRef);
+      return null;
+    }
+    case "catalog.listTerminalProviderStages":
+      return repository.listTerminalProviderStages();
+    case "catalog.listPreparedProviderOperations":
+      return repository.listPreparedProviderOperations();
+    case "catalog.markEnvironmentConnectionUnavailable":
+      return repository.markEnvironmentConnectionUnavailable(payload);
+    case "catalog.renameProviderConnection":
+      return repository.renameProviderConnection(payload);
+    case "catalog.putProviderCapabilities":
+      return repository.putProviderCapabilities(payload);
+    case "catalog.getProviderCapabilities": {
+      const input = z.strictObject({ connectionId: z.string().min(1) }).parse(payload);
+      return repository.getProviderCapabilities(input.connectionId);
+    }
     case "catalog.reconcileSession":
       return repository.reconcileSession(payload);
     case "catalog.reconcileCreationSession":

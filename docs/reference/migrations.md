@@ -1,4 +1,4 @@
-# Wi v0.1 database migrations and repair
+# Wi database migrations and repair
 
 Wi owns one catalog database and one canonical database per session. They have independent version sequences and never share a transaction.
 
@@ -6,8 +6,8 @@ Wi owns one catalog database and one canonical database per session. They have i
 
 | Database | Current `PRAGMA user_version` | Migration source |
 |---|---:|---|
-| Catalog | 5 | `packages/storage/src/catalog/migrations.ts` |
-| Session | 4 | `packages/storage/src/session/migrations.ts` |
+| Catalog | 6 | `packages/storage/src/catalog/migrations.ts` |
+| Session | 5 | `packages/storage/src/session/migrations.ts` |
 
 Migration SQL is copied into the built storage package by `scripts/copy-storage-sql.mjs`; `pnpm build` verifies package entry points afterward.
 
@@ -20,6 +20,7 @@ Migration SQL is copied into the built storage package by `scripts/copy-storage-
 | 3 | Transactional `catalog_repair_state` marker with `catalog_new`, `catalog_corrupt`, or `explicit` reason |
 | 4 | Per-session `recovery_candidate` plus recovery-candidate index |
 | 5 | Nullable historical `unavailable_reason`; current policy preserves unavailable databases in place |
+| 6 | Provider connections, authoritative identity claims, capability snapshots, exclusive lifecycle-operation owners, provisioning/recovery claims, metadata-command idempotency, shared catalog-global command-ID ownership across session creation/provider lifecycle/provider metadata ledgers, catalog revision state, and internal nonsecret staged/recovery descriptor identity; no provider secrets or credential-derived hashes |
 
 Catalog migrations run before normal catalog use. A catalog migration failure prevents normal startup because listing and locating sessions cannot be trusted. Wi preserves the original database and sidecars rather than silently overwriting evidence.
 
@@ -31,8 +32,9 @@ Catalog migrations run before normal catalog use. A catalog migration failure pr
 | 2 | Adds `tool_call_occurrences`, indexes it by call, and backfills one occurrence from every existing tool execution |
 | 3 | Adds nullable `provider_steps.diagnostic_id` |
 | 4 | Adds singleton `creation_provenance` for reconstructing the original accepted `session.create` identity |
+| 5 | Adds immutable provider-selection snapshots and provider-chain IDs to runs, plus the singleton future-run provider default projection |
 
-Every session migration updates `manifest.schema_version` in the same transaction as its schema change. Retained v1-v3 databases are tested. Exact v3 fixtures prove v4 migration preserves canonical events, and injected failures prove rollback leaves the old version readable and retryable.
+Every session migration updates `manifest.schema_version` in the same transaction as its schema change. Retained v1-v4 databases are tested. Frozen prior-version SQL fixtures independent of the current migration arrays prove catalog v5→v6 and session v4→v5 migration with representative retained rows. Injected v6/v5 DDL failures prove rollback preserves the old version and data before a successful retry; the retained v3 fixture continues to prove the same property for v3→v4.
 
 Older retained sessions without v4 creation provenance can rebuild catalog session rows, but cannot reconstruct an already-lost original `session.create` command ID.
 

@@ -441,7 +441,7 @@ It never includes:
 - API keys
 - OAuth tokens
 - browser session secrets
-- planned [`CredentialStore`](../adr/0014-wsl-file-credential-store.md) material (no provider credential store exists in v0.1)
+- [`CredentialStore`](../adr/0014-wsl-file-credential-store.md) material, which is outside `WI_HOME` and its backup/export boundary beginning in Milestone 11 (the released v0.1 product has no provider credential store)
 
 Session-index rows are rebuildable from discovered session manifests, but project registration metadata is not independently reconstructable in v0.1. A complete installation backup should therefore include both catalog and session directories.
 

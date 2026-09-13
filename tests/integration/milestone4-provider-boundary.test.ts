@@ -57,7 +57,6 @@ function ids(prefix: string): { readonly actor: SessionActorIds; readonly loop: 
 }
 
 class UntrustedProvider implements ProviderAdapter {
-  readonly id = "untrusted-test";
   readonly requests: ProviderRequest[] = [];
 
   constructor(
@@ -65,6 +64,7 @@ class UntrustedProvider implements ProviderAdapter {
       request: ProviderRequest,
       context: ProviderContext,
     ) => readonly unknown[],
+    readonly id = "untrusted-test",
   ) {}
 
   async *stream(
@@ -86,6 +86,9 @@ async function runBoundaryFixture(options: {
     readonly state: "completed" | "failed" | "interrupted";
     readonly failureCategory: string | null;
   };
+  readonly baseProviderId?: string;
+  readonly selectedProviderId?: string;
+  readonly onFailureProviderId?: (providerId: string) => void;
 }): Promise<{
   readonly runId: string | null;
   readonly submissionError: unknown | null;
@@ -114,12 +117,24 @@ async function runBoundaryFixture(options: {
     params: {},
   });
   const session = await manager.openSession(created.session.sessionId);
-  const provider = new UntrustedProvider(options.values);
+  const provider = new UntrustedProvider(
+    options.values,
+    options.selectedProviderId ?? "untrusted-test",
+  );
+  const baseProvider = options.baseProviderId === undefined
+    ? provider
+    : new UntrustedProvider(() => [], options.baseProviderId);
   const executions: string[] = [];
   const generated = ids(`providerBoundary${number}`);
   const loop = new AgentRunLoop({
     storage: session,
-    provider,
+    provider: baseProvider,
+    ...(baseProvider === provider ? {} : { providerForRun: () => provider }),
+    onFailureDiagnostic: (diagnostic) => {
+      if (diagnostic.operation === "provider") {
+        options.onFailureProviderId?.(diagnostic.providerId);
+      }
+    },
     registry: createBuiltinToolRegistry(),
     executor: new ToolExecutor({ onExecutionStart: ({ callId }) => executions.push(callId) }),
     ids: generated.loop,
@@ -820,6 +835,18 @@ describe("Milestone 4 provider runtime boundary", () => {
         maxRequestBytes: PROVIDER_LIMITS.requestMaxBytes,
       }),
     ).resolves.toEqual({ status: "limit_exceeded", boundary: "message_text" });
+  });
+
+  it("attributes selected-provider failures to the durable run provider", async () => {
+    const providerIds: string[] = [];
+    await runBoundaryFixture({
+      values: () => [{ type: "not-a-provider-event" }],
+      baseProviderId: "fake",
+      selectedProviderId: "openai_platform",
+      onFailureProviderId: (providerId) => providerIds.push(providerId),
+      expectedRun: { state: "failed", failureCategory: "provider.protocol_error" },
+    });
+    expect(providerIds).toEqual(["openai_platform"]);
   });
 
   it("rejects oversized provider configuration before invoking the provider", async () => {

@@ -1489,7 +1489,7 @@ describe("Milestone 7 real server crash recovery", () => {
         requiresAttention: false,
         pendingApprovalCount: 0,
         pendingInputCount: 0,
-        sessionSchemaVersion: 4,
+        sessionSchemaVersion: 5,
       });
     } finally {
       await storage.close();

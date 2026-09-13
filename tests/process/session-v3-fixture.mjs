@@ -73,7 +73,7 @@ if (mode === "drop-failure") {
   }
 }
 
-if (mode === "verify-v4") {
+if (mode === "verify-v5") {
   const database = new Database(databasePath);
   try {
     let updateRejected = false;
@@ -96,8 +96,8 @@ if (mode === "verify-v4") {
       .prepare("SELECT COUNT(*) AS count FROM creation_provenance")
       .get();
     process.exit(
-      userVersion === 4 &&
-          manifest?.schemaVersion === 4 &&
+      userVersion === 5 &&
+          manifest?.schemaVersion === 5 &&
           provenanceCount?.count === 0 &&
           updateRejected &&
           deleteRejected

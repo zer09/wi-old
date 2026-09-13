@@ -20,9 +20,15 @@ importers:
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1
+      '@wi/credentials':
+        specifier: workspace:*
+        version: link:packages/credentials
       '@wi/protocol':
         specifier: workspace:*
         version: link:packages/protocol
+      '@wi/provider-connections':
+        specifier: workspace:*
+        version: link:packages/provider-connections
       '@wi/provider-contract':
         specifier: workspace:*
         version: link:packages/provider-contract
@@ -59,12 +65,21 @@ importers:
 
   apps/server:
     dependencies:
+      '@wi/credentials':
+        specifier: workspace:*
+        version: link:../../packages/credentials
       '@wi/harness-core':
         specifier: workspace:*
         version: link:../../packages/harness-core
       '@wi/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@wi/provider-connections':
+        specifier: workspace:*
+        version: link:../../packages/provider-connections
+      '@wi/provider-contract':
+        specifier: workspace:*
+        version: link:../../packages/provider-contract
       '@wi/provider-fake':
         specifier: workspace:*
         version: link:../../packages/provider-fake
@@ -77,6 +92,9 @@ importers:
       ws:
         specifier: 8.18.3
         version: 8.18.3
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/ws':
         specifier: 8.18.1
@@ -116,6 +134,15 @@ importers:
         specifier: workspace:*
         version: link:../protocol
 
+  packages/credentials:
+    dependencies:
+      '@wi/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
   packages/harness-core:
     dependencies:
       '@wi/protocol':
@@ -136,6 +163,12 @@ importers:
       zod:
         specifier: 4.4.3
         version: 4.4.3
+
+  packages/provider-connections:
+    dependencies:
+      '@wi/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/provider-contract:
     dependencies:

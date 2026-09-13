@@ -283,7 +283,7 @@ export class BrowserCommandJournal {
       if (
         existing.type !== "command" ||
         existing.commandJson !== commandJson ||
-        JSON.stringify(existing.draft) !== JSON.stringify(parsedDraft)
+        canonicalJson(existing.draft ?? null) !== canonicalJson(parsedDraft ?? null)
       ) {
         throw new BrowserCommandJournalError(
           "An unresolved command ID cannot be reused with different content.",

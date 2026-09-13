@@ -47,10 +47,31 @@ export interface ConnectionSnapshotEvidence {
   readonly closed: boolean;
 }
 
+export type ProviderRecoveryFailpoint =
+  | "after_recovery_admission"
+  | "after_recovery_prepare"
+  | "after_provider_file_observed"
+  | "after_provider_lifecycle_terminal_before_ack";
+
 export interface RestartableServer {
   readonly origin: string;
   readonly homeDirectory: string;
   restart(): Promise<void>;
+  restartAfterCrash(): Promise<void>;
+  restoreProviderEnvironment(): Promise<void>;
+  stageProviderKey(label: string): Promise<string>;
+  armProviderFailpoint(name: ProviderRecoveryFailpoint): Promise<void>;
+  armLifecyclePrepare(): Promise<void>;
+  waitForLifecyclePrepareBlock(): Promise<{ readonly commandId: string; readonly connectionId: string }>;
+  releaseLifecyclePrepare(commandId: string): void;
+  providerRequestCount(): Promise<number>;
+  waitForProviderCommand(method: string): Promise<string>;
+  providerOperation(commandId: string): Promise<{
+    readonly phase: string;
+    readonly targetConnectionId: string;
+    readonly result: unknown;
+    readonly failureCode: string | null;
+  }>;
   disconnect(code: number, reason: string): Promise<number>;
   armReplay(sessionId: string): Promise<void>;
   waitForReplayBlock(sessionId: string): Promise<void>;
@@ -108,6 +129,8 @@ async function launch(
   homeDirectory: string,
   fixedPort?: number,
   replayLiveEvents?: number,
+  providerRecovery = false,
+  providerScenario?: string,
 ): Promise<RunningChild> {
   const script = fileURLToPath(new URL("./server-process.mjs", import.meta.url));
   const child = fork(
@@ -118,10 +141,21 @@ async function launch(
       fixedPort === undefined ? "-" : String(fixedPort),
       "-",
       replayLiveEvents === undefined ? "-" : String(replayLiveEvents),
+      providerRecovery ? "recovery" : "-",
+      providerScenario ?? "-",
     ],
     {
       stdio: ["ignore", "pipe", "pipe", "ipc"],
-      env: { ...process.env, NODE_ENV: "test" },
+      env: {
+        ...process.env,
+        NODE_ENV: "test",
+        ...(providerRecovery || providerScenario !== undefined
+          ? {
+              WI_ALLOW_TEST_FAILPOINTS: "1",
+              WI_E2E_PROVIDER_CONNECTION_FIXTURE: "1",
+            }
+          : {}),
+      },
     },
   );
   const stdout = new BoundedProcessOutput();
@@ -190,14 +224,27 @@ async function launch(
 }
 
 export async function startRestartableServer(
-  options: { readonly replayLiveEvents?: number } = {},
+  options: {
+    readonly replayLiveEvents?: number;
+    readonly providerRecovery?: boolean;
+    readonly providerScenario?: string;
+  } = {},
 ): Promise<RestartableServer> {
   const homeDirectory = await mkdtemp(join(tmpdir(), "wi-e2e-restart-"));
   let current: RunningChild;
   try {
-    current = await launch(homeDirectory, undefined, options.replayLiveEvents);
+    current = await launch(
+      homeDirectory,
+      undefined,
+      options.replayLiveEvents,
+      options.providerRecovery ?? false,
+      options.providerScenario,
+    );
   } catch (error) {
-    await rm(homeDirectory, { recursive: true, force: true });
+    await Promise.all([
+      rm(homeDirectory, { recursive: true, force: true }),
+      rm(`${homeDirectory}-credential-state`, { recursive: true, force: true }),
+    ]);
     throw error;
   }
   const origin = current.origin;
@@ -237,10 +284,101 @@ export async function startRestartableServer(
           `${error instanceof Error ? error.message : String(error)}\n${previous.output()}`,
         );
       });
-      current = await launch(homeDirectory, port, options.replayLiveEvents);
+      current = await launch(
+        homeDirectory,
+        port,
+        options.replayLiveEvents,
+        false,
+        options.providerScenario,
+      );
       if (current.origin !== origin) {
         throw new Error(`Restart changed origin from ${origin} to ${current.origin}`);
       }
+    },
+    async restartAfterCrash() {
+      if (closed) throw new Error("Restartable Wi server is closed");
+      await waitForExit(current.child);
+      current = await launch(
+        homeDirectory,
+        port,
+        options.replayLiveEvents,
+        false,
+        options.providerScenario,
+      );
+      if (current.origin !== origin) {
+        throw new Error(`Restart changed origin from ${origin} to ${current.origin}`);
+      }
+    },
+    async restoreProviderEnvironment() {
+      await request(
+        "restore-provider-environment",
+        {},
+        "provider-environment-restored",
+      );
+    },
+    async stageProviderKey(label) {
+      const response = await request("stage-provider-key", { label }, "provider-key-staged");
+      if (typeof response.provisioningRef !== "string") {
+        throw new Error("Provider stage fixture returned no provisioning reference");
+      }
+      return response.provisioningRef;
+    },
+    async armProviderFailpoint(name) {
+      const response = await request(
+        "arm-provider-failpoint",
+        { name },
+        "provider-failpoint-armed",
+      );
+      if (response.name !== name) throw new Error("Provider failpoint fixture armed the wrong phase");
+    },
+    async armLifecyclePrepare() {
+      await request("arm-lifecycle-prepare", {}, "lifecycle-prepare-armed");
+    },
+    async waitForLifecyclePrepareBlock() {
+      const response = await current.waitFor(
+        (message) => message.type === "lifecycle-prepare-blocked",
+      );
+      if (typeof response.commandId !== "string" || typeof response.connectionId !== "string") {
+        throw new Error("Lifecycle prepare fixture returned invalid command identity");
+      }
+      return { commandId: response.commandId, connectionId: response.connectionId };
+    },
+    releaseLifecyclePrepare(commandId) {
+      current.send({ type: "release-lifecycle-prepare", commandId });
+    },
+    async providerRequestCount() {
+      const response = await request("provider-request-count", {}, "provider-request-count");
+      if (typeof response.count !== "number") throw new Error("Provider request count is missing");
+      return response.count;
+    },
+    async waitForProviderCommand(method) {
+      const response = await current.waitFor(
+        (message) => message.type === "provider-command-routed" && message.method === method,
+      );
+      if (typeof response.commandId !== "string") {
+        throw new Error("Routed provider command identity is missing");
+      }
+      return response.commandId;
+    },
+    async providerOperation(commandId) {
+      const response = await request(
+        "provider-operation",
+        { commandId },
+        "provider-operation",
+      );
+      if (
+        typeof response.phase !== "string" ||
+        typeof response.targetConnectionId !== "string" ||
+        !(typeof response.failureCode === "string" || response.failureCode === null)
+      ) {
+        throw new Error("Provider operation evidence is missing");
+      }
+      return {
+        phase: response.phase,
+        targetConnectionId: response.targetConnectionId,
+        result: response.result,
+        failureCode: response.failureCode,
+      };
     },
     async disconnect(code, reason) {
       const response = await request("disconnect", { code, reason }, "disconnected");
@@ -350,9 +488,10 @@ export async function startRestartableServer(
       closed = true;
       const errors: unknown[] = [];
       await stopChild(current.child).catch((error: unknown) => errors.push(error));
-      await rm(homeDirectory, { recursive: true, force: true }).catch((error: unknown) =>
-        errors.push(error),
-      );
+      await Promise.all([
+        rm(homeDirectory, { recursive: true, force: true }),
+        rm(`${homeDirectory}-credential-state`, { recursive: true, force: true }),
+      ]).catch((error: unknown) => errors.push(error));
       if (errors.length > 0) throw new AggregateError(errors, "Restartable Wi cleanup failed");
     },
   };

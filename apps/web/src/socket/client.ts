@@ -2,6 +2,7 @@ import {
   BrowserCommandLimitsSchema,
   ClientMessageSchema,
   ServerMessageSchema,
+  canonicalJson,
   createId,
   type BrowserCommandLimits,
   type CommandMessage,
@@ -234,14 +235,18 @@ export class WiSocketClient {
     const existing = this.pending.get(parsed.commandId);
     if (existing !== undefined) {
       if (
-        JSON.stringify(existing.command) !== JSON.stringify(parsed) ||
-        JSON.stringify(existing.draft) !== JSON.stringify(draft)
+        canonicalJson(existing.command) !== canonicalJson(parsed) ||
+        canonicalJson(existing.draft ?? null) !== canonicalJson(draft ?? null)
       ) {
         throw new Error("A pending command ID cannot be reused with different content");
       }
       return;
     }
-    this.options.journal.addCommand(parsed, draft);
+    // Recovery references are process-bound bearer material. Keep the complete
+    // recovery command memory-only; it must never enter sessionStorage.
+    if (parsed.method !== "providerConnection.recover") {
+      this.options.journal.addCommand(parsed, draft);
+    }
     this.pending.set(parsed.commandId, {
       command: parsed,
       phase: "queued",

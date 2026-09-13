@@ -13,6 +13,8 @@ const workspaceDirectories = [
   "packages/protocol",
   "packages/storage",
   "packages/provider-contract",
+  "packages/provider-connections",
+  "packages/credentials",
   "packages/provider-fake",
   "packages/tools",
   "packages/harness-core",
@@ -24,6 +26,8 @@ const allowedInternalDependencies: Readonly<Record<string, readonly string[]>> =
   "@wi/protocol": [],
   "@wi/storage": ["@wi/protocol"],
   "@wi/provider-contract": ["@wi/protocol"],
+  "@wi/provider-connections": ["@wi/protocol"],
+  "@wi/credentials": ["@wi/protocol"],
   "@wi/provider-fake": ["@wi/protocol", "@wi/provider-contract"],
   "@wi/tools": ["@wi/protocol"],
   "@wi/harness-core": [
@@ -38,6 +42,8 @@ const allowedInternalDependencies: Readonly<Record<string, readonly string[]>> =
     "@wi/protocol",
     "@wi/storage",
     "@wi/provider-contract",
+    "@wi/provider-connections",
+    "@wi/credentials",
     "@wi/provider-fake",
     "@wi/tools",
     "@wi/harness-core",
@@ -61,7 +67,9 @@ const universallyForbiddenModules = [
 ] as const;
 
 const packageSpecificForbiddenModules: Readonly<Record<string, readonly string[]>> = {
-  "@wi/protocol": ["@wi/server", "@wi/storage", "@wi/provider-contract", "@wi/provider-fake"],
+  "@wi/protocol": ["@wi/server", "@wi/storage", "@wi/provider-contract", "@wi/provider-connections", "@wi/credentials", "@wi/provider-fake"],
+  "@wi/provider-connections": ["node:dns", "node:net", "node:tls", "node:http", "node:https", "undici"],
+  "@wi/credentials": ["node:dns", "node:net", "node:tls", "node:http", "node:https", "undici"],
   "@wi/client-state": ["@wi/server", "@wi/storage"],
 };
 
@@ -255,6 +263,8 @@ describe("workspace architecture", () => {
     const childOnlySqliteFixtures = new Set([
       join(root, "tests/process/catalog-v1-fixture.mjs"),
       join(root, "tests/process/milestone7-provenance-mutation-fixture.mjs"),
+      join(root, "tests/process/provider-migration-fixture.mjs"),
+      join(root, "tests/process/provider-orphan-lifecycle-fixture.mjs"),
       join(root, "tests/process/session-v1-fixture.mjs"),
       join(root, "tests/process/session-v3-fixture.mjs"),
     ]);
@@ -338,8 +348,11 @@ describe("workspace architecture", () => {
         if (/\bEventSource\b/.test(source)) {
           violations.push(`${relative(root, file)} uses browser SSE EventSource`);
         }
-        if (/\bopenai\b/i.test(source)) {
-          violations.push(`${relative(root, file)} contains excluded OpenAI integration`);
+        if (
+          (manifest.name === "@wi/provider-connections" || manifest.name === "@wi/credentials") &&
+          /\bfetch\s*\(/u.test(source)
+        ) {
+          violations.push(`${relative(root, file)} attempts provider network access`);
         }
         if (/codex[\s_-]+app[\s_-]+server/i.test(source)) {
           violations.push(`${relative(root, file)} contains excluded codex app-server integration`);

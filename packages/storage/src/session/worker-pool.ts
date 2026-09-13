@@ -27,6 +27,7 @@ import {
   SessionEventPageSchema,
   SessionCatalogProjectionSchema,
   SessionManifestSchema,
+  SessionProviderDefaultRecordSchema,
   SessionRecoveryResultSchema,
   CreationProvenanceSchema,
   type AcceptCommandInput,
@@ -48,6 +49,7 @@ import {
   type SessionEventPageInput,
   type SessionCatalogProjection,
   type SessionManifest,
+  type SessionProviderDefaultRecord,
   type SessionRecoveryResult,
   type CreationProvenance,
 } from "../types.js";
@@ -487,6 +489,15 @@ export class SessionWorkerPool {
       "session.getRun",
       { runId },
       z.union([RunRecordSchema, z.null()]),
+    );
+  }
+
+  async getProviderDefault(sessionId: string): Promise<SessionProviderDefaultRecord | null> {
+    return this.request(
+      sessionId,
+      "session.getProviderDefault",
+      {},
+      z.union([SessionProviderDefaultRecordSchema, z.null()]),
     );
   }
 

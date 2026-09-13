@@ -5,19 +5,36 @@ import { z } from "zod";
 
 import {
   BrowserSessionSummarySchema,
+  ProviderCapabilitiesSnapshotSchema,
+  ProviderConnectionIdSchema,
   SessionIdSchema,
   type BrowserSessionSummary,
+  type ProviderCapabilitiesSnapshot,
 } from "@wi/protocol";
 
 import { SessionStatusCoordinator } from "../common/session-status-coordinator.js";
 import { StorageError, WorkerRpcClient } from "../common/worker-rpc.js";
 import {
   GlobalCommandRecordSchema,
+  EnvironmentConnectionRegistrationSchema,
+  FileConnectionReservationSchema,
   GlobalCommandReservationSchema,
   ProjectRecordSchema,
+  ProviderCatalogStateSchema,
+  ProviderConnectionRecordSchema,
+  ProviderLifecycleOperationRecordSchema,
+  RecoveredConnectionReservationSchema,
+  RecoveryAdmissionSchema,
   SessionSummarySchema,
+  type EnvironmentConnectionRegistration,
+  type FileConnectionReservation,
   type GlobalCommandRecord,
   type GlobalCommandReservation,
+  type ProviderCatalogState,
+  type ProviderConnectionRecord,
+  type ProviderLifecycleOperationRecord,
+  type RecoveredConnectionReservation,
+  type RecoveryAdmission,
   type ProjectRecord,
   type SessionCreationRequest,
   type SessionManifest,
@@ -29,15 +46,29 @@ import {
   CatalogRepairPageInputSchema,
   CatalogRepairPageSchema,
   CatalogRepairReasonSchema,
+  CompleteProviderLifecycleInputSchema,
+  FailOrphanedProviderLifecycleInputSchema,
+  FailProviderRecoveryInputSchema,
+  FileConnectionReservationResultSchema,
+  MarkEnvironmentConnectionUnavailableInputSchema,
   MarkSessionsMissingInputSchema,
   MAXIMUM_BOUNDED_SESSION_LIST_LIMIT,
   MAXIMUM_CATALOG_REPAIR_PAGE_SIZE,
+  ObserveProviderLifecycleEffectInputSchema,
+  PrepareProviderLifecycleInputSchema,
+  ProviderConnectionCommandResultSchema,
+  ProviderMetadataCommandResultSchema,
+  PutProviderCapabilitiesInputSchema,
+  RenameProviderConnectionInputSchema,
   ReconcileSessionResultSchema,
   RepairSessionClassificationInputSchema,
   type CatalogProjectionUpdateResult,
   type CatalogRepairPage,
   type CatalogRepairReason,
   type CreateSessionIndexInput,
+  type FileConnectionReservationResult,
+  type ProviderConnectionCommandResult,
+  type ProviderMetadataCommandResult,
   type FailGlobalCommandInput,
   type MarkSessionStatusInput,
   type ReconcileSessionResult,
@@ -464,6 +495,258 @@ export class CatalogClient {
 
   async reconcileSession(input: ReconcileSessionInput): Promise<SessionSummary> {
     return (await this.reconcileSessionWithStatus(input)).summary;
+  }
+
+  async getProviderCatalogState(): Promise<ProviderCatalogState> {
+    return catalogRpc(this).request(
+      "catalog.getProviderCatalogState",
+      {},
+      ProviderCatalogStateSchema,
+    );
+  }
+
+  async setProviderCatalogRecoveryActive(active: boolean): Promise<ProviderCatalogState> {
+    return catalogRpc(this).request(
+      "catalog.setProviderCatalogRecoveryActive",
+      { active },
+      ProviderCatalogStateSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async listProviderConnections(limit = 1_001): Promise<{
+    readonly connections: readonly ProviderConnectionRecord[];
+    readonly catalogRevision: number;
+    readonly truncated: boolean;
+  }> {
+    return catalogRpc(this).request(
+      "catalog.listProviderConnections",
+      { limit },
+      z.strictObject({
+        connections: z.array(ProviderConnectionRecordSchema).max(1_000),
+        catalogRevision: z.number().int().nonnegative().safe(),
+        truncated: z.boolean(),
+      }),
+    );
+  }
+
+  async getProviderConnection(connectionId: string): Promise<ProviderConnectionRecord | null> {
+    return catalogRpc(this).request(
+      "catalog.getProviderConnection",
+      { connectionId: ProviderConnectionIdSchema.parse(connectionId) },
+      z.union([ProviderConnectionRecordSchema, z.null()]),
+    );
+  }
+
+  async registerEnvironmentConnection(
+    input: EnvironmentConnectionRegistration,
+  ): Promise<ProviderConnectionCommandResult> {
+    return catalogRpc(this).request(
+      "catalog.registerEnvironmentConnection",
+      EnvironmentConnectionRegistrationSchema.parse(input),
+      ProviderConnectionCommandResultSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async admitProviderRecovery(
+    input: RecoveryAdmission,
+  ): Promise<ProviderLifecycleOperationRecord> {
+    return catalogRpc(this).request(
+      "catalog.admitProviderRecovery",
+      RecoveryAdmissionSchema.parse(input),
+      ProviderLifecycleOperationRecordSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async failProviderRecovery(
+    input: z.input<typeof FailProviderRecoveryInputSchema>,
+  ): Promise<ProviderLifecycleOperationRecord> {
+    return catalogRpc(this).request(
+      "catalog.failProviderRecovery",
+      FailProviderRecoveryInputSchema.parse(input),
+      ProviderLifecycleOperationRecordSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async failValidatingProviderRecoveries(updatedAtMs: number): Promise<number> {
+    return catalogRpc(this).request(
+      "catalog.failValidatingProviderRecoveries",
+      { updatedAtMs },
+      z.number().int().nonnegative().safe(),
+      { outcome: "write" },
+    );
+  }
+
+  async reserveRecoveredProviderConnection(
+    input: RecoveredConnectionReservation,
+  ): Promise<ProviderConnectionCommandResult> {
+    return catalogRpc(this).request(
+      "catalog.reserveRecoveredProviderConnection",
+      RecoveredConnectionReservationSchema.parse(input),
+      ProviderConnectionCommandResultSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async reserveFileProviderConnection(
+    input: FileConnectionReservation,
+  ): Promise<FileConnectionReservationResult> {
+    return catalogRpc(this).request(
+      "catalog.reserveFileProviderConnection",
+      FileConnectionReservationSchema.parse(input),
+      FileConnectionReservationResultSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async prepareProviderLifecycle(
+    input: z.input<typeof PrepareProviderLifecycleInputSchema>,
+  ): Promise<ProviderConnectionCommandResult> {
+    return catalogRpc(this).request(
+      "catalog.prepareProviderLifecycle",
+      PrepareProviderLifecycleInputSchema.parse(input),
+      ProviderConnectionCommandResultSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async disableProviderConnection(
+    input: z.input<typeof PrepareProviderLifecycleInputSchema>,
+  ): Promise<ProviderConnectionCommandResult> {
+    return catalogRpc(this).request(
+      "catalog.disableProviderConnection",
+      PrepareProviderLifecycleInputSchema.parse(input),
+      ProviderConnectionCommandResultSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async observeProviderLifecycleEffect(
+    input: z.input<typeof ObserveProviderLifecycleEffectInputSchema>,
+  ): Promise<ProviderLifecycleOperationRecord> {
+    return catalogRpc(this).request(
+      "catalog.observeProviderLifecycleEffect",
+      ObserveProviderLifecycleEffectInputSchema.parse(input),
+      ProviderLifecycleOperationRecordSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async failOrphanedProviderLifecycle(
+    input: z.input<typeof FailOrphanedProviderLifecycleInputSchema>,
+  ): Promise<ProviderLifecycleOperationRecord> {
+    return catalogRpc(this).request(
+      "catalog.failOrphanedProviderLifecycle",
+      FailOrphanedProviderLifecycleInputSchema.parse(input),
+      ProviderLifecycleOperationRecordSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async completeProviderLifecycle(
+    input: z.input<typeof CompleteProviderLifecycleInputSchema>,
+  ): Promise<ProviderConnectionCommandResult> {
+    return catalogRpc(this).request(
+      "catalog.completeProviderLifecycle",
+      CompleteProviderLifecycleInputSchema.parse(input),
+      ProviderConnectionCommandResultSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async hasProviderMetadataCommand(commandId: string): Promise<boolean> {
+    return catalogRpc(this).request(
+      "catalog.hasProviderMetadataCommand",
+      { commandId },
+      z.boolean(),
+    );
+  }
+
+  async getProviderLifecycleOperation(
+    commandId: string,
+  ): Promise<ProviderLifecycleOperationRecord | null> {
+    return catalogRpc(this).request(
+      "catalog.getProviderLifecycleOperation",
+      { commandId },
+      z.union([ProviderLifecycleOperationRecordSchema, z.null()]),
+    );
+  }
+
+  async isProvisioningClaimActive(provisioningId: string): Promise<boolean> {
+    return catalogRpc(this).request(
+      "catalog.isProvisioningClaimActive",
+      { provisioningId },
+      z.boolean(),
+    );
+  }
+
+  async markProviderStageCleaned(stagingInternalRef: string): Promise<void> {
+    await catalogRpc(this).request(
+      "catalog.markProviderStageCleaned",
+      { stagingInternalRef },
+      z.null(),
+      { outcome: "write" },
+    );
+  }
+
+  async listTerminalProviderStages(): Promise<readonly string[]> {
+    return catalogRpc(this).request(
+      "catalog.listTerminalProviderStages",
+      {},
+      z.array(z.string().regex(/^stage_[a-f0-9]{64}$/u)).max(1_000),
+    );
+  }
+
+  async listPreparedProviderOperations(): Promise<readonly ProviderLifecycleOperationRecord[]> {
+    return catalogRpc(this).request(
+      "catalog.listPreparedProviderOperations",
+      {},
+      z.array(ProviderLifecycleOperationRecordSchema).max(1_000),
+    );
+  }
+
+  async markEnvironmentConnectionUnavailable(
+    input: z.input<typeof MarkEnvironmentConnectionUnavailableInputSchema>,
+  ): Promise<ProviderConnectionRecord> {
+    return catalogRpc(this).request(
+      "catalog.markEnvironmentConnectionUnavailable",
+      MarkEnvironmentConnectionUnavailableInputSchema.parse(input),
+      ProviderConnectionRecordSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async renameProviderConnection(
+    input: z.input<typeof RenameProviderConnectionInputSchema>,
+  ): Promise<ProviderMetadataCommandResult> {
+    return catalogRpc(this).request(
+      "catalog.renameProviderConnection",
+      RenameProviderConnectionInputSchema.parse(input),
+      ProviderMetadataCommandResultSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async putProviderCapabilities(
+    input: z.input<typeof PutProviderCapabilitiesInputSchema>,
+  ): Promise<ProviderConnectionRecord> {
+    return catalogRpc(this).request(
+      "catalog.putProviderCapabilities",
+      PutProviderCapabilitiesInputSchema.parse(input),
+      ProviderConnectionRecordSchema,
+      { outcome: "write" },
+    );
+  }
+
+  async getProviderCapabilities(connectionId: string): Promise<ProviderCapabilitiesSnapshot | null> {
+    return catalogRpc(this).request(
+      "catalog.getProviderCapabilities",
+      { connectionId: ProviderConnectionIdSchema.parse(connectionId) },
+      z.union([ProviderCapabilitiesSnapshotSchema, z.null()]),
+    );
   }
 
   async close(deadlineAtMs?: number): Promise<void> {

@@ -6,15 +6,20 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
+    "credentials:provision": "node dist/credential-cli.js",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@wi/credentials": "workspace:*",
     "@wi/harness-core": "workspace:*",
     "@wi/protocol": "workspace:*",
+    "@wi/provider-connections": "workspace:*",
+    "@wi/provider-contract": "workspace:*",
     "@wi/provider-fake": "workspace:*",
     "@wi/storage": "workspace:*",
     "@wi/tools": "workspace:*",
-    "ws": "8.18.3"
+    "ws": "8.18.3",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/ws": "8.18.1"

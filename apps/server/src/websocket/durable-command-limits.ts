@@ -97,5 +97,16 @@ export function durableCommandPayloadBytes(command: CommandMessage): number {
     case "run.cancel":
     case "approval.resolve":
       return 0;
+    case "providerConnection.file.create":
+    case "providerConnection.environment.create":
+    case "providerConnection.environment.revalidate":
+    case "providerConnection.file.replace":
+    case "providerConnection.rename":
+    case "providerConnection.disable":
+    case "providerConnection.logout":
+    case "providerConnection.delete":
+    case "providerConnection.recover":
+    case "session.providerDefault.set":
+      return canonicalJsonBytes(command.params).byteLength;
   }
 }

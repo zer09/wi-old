@@ -3,6 +3,7 @@ import type {
   ProviderContext,
   ProviderEvent,
   ProviderRequest,
+  IssuedProviderCredential,
 } from "@wi/provider-contract";
 
 import { createFakeProviderScript } from "./scenarios.js";
@@ -46,12 +47,19 @@ export function parseFakeProviderConfiguration(value: unknown): FakeProviderConf
 }
 
 export class FakeProviderAdapter implements ProviderAdapter {
-  readonly id = "fake";
+  readonly id: string;
   readonly requests: ProviderRequest[] = [];
   readonly controller: FakeProviderController;
+  private readonly onCredential: ((credential: IssuedProviderCredential | undefined) => void) | undefined;
 
-  constructor(options: { readonly controller?: FakeProviderController } = {}) {
+  constructor(options: {
+    readonly controller?: FakeProviderController;
+    readonly id?: string;
+    readonly onCredential?: (credential: IssuedProviderCredential | undefined) => void;
+  } = {}) {
+    this.id = options.id ?? "fake";
     this.controller = options.controller ?? new FakeProviderController();
+    this.onCredential = options.onCredential;
   }
 
   async *stream(
@@ -60,6 +68,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
     signal: AbortSignal,
   ): AsyncIterable<ProviderEvent> {
     signal.throwIfAborted();
+    this.onCredential?.(context.credential);
     const configuration = parseFakeProviderConfiguration(request.providerConfig);
     const script = createFakeProviderScript(configuration);
     const scriptStep = script.steps[request.stepIndex] ?? script.steps.at(-1);

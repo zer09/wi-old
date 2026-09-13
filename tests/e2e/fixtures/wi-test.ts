@@ -42,6 +42,9 @@ export interface WiTestServer {
     readonly fallbackTitle: string;
   }>;
   sessionHead(sessionId: string): Promise<number>;
+  stageProviderKey(label: string): Promise<string>;
+  armRecoveryBeforeRoute(): Promise<void>;
+  waitForRecoveryBeforeRouteBlock(): Promise<string>;
 }
 
 export interface RunningServer {
@@ -88,7 +91,10 @@ async function startServerCleanup(child: ChildProcess | null, homeDirectory: str
     }
   }
   try {
-    await rm(homeDirectory, { recursive: true, force: true });
+    await Promise.all([
+      rm(homeDirectory, { recursive: true, force: true }),
+      rm(`${homeDirectory}-credential-state`, { recursive: true, force: true }),
+    ]);
   } catch (error) {
     errors.push(error);
   }
@@ -106,6 +112,12 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   try {
     child = fork(script, [homeDirectory, ...(options.childArguments ?? [])], {
       stdio: ["ignore", "pipe", "pipe", "ipc"],
+      env: {
+        ...process.env,
+        NODE_ENV: "test",
+        WI_ALLOW_TEST_FAILPOINTS: "1",
+        WI_E2E_PROVIDER_CONNECTION_FIXTURE: "1",
+      },
     });
     options.onChildStarted?.(child);
   } catch (error) {
@@ -177,6 +189,39 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   let requestId = 0;
   const api: WiTestServer = {
     origin: ready.origin,
+    async armRecoveryBeforeRoute() {
+      requestId += 1;
+      const currentRequestId = `recovery-before-route-${requestId}`;
+      child.send({ type: "arm-recovery-before-route", requestId: currentRequestId });
+      await waitFor(
+        (candidate) =>
+          candidate.type === "recovery-before-route-armed" &&
+          candidate.requestId === currentRequestId,
+      );
+    },
+    async waitForRecoveryBeforeRouteBlock() {
+      const message = await waitFor(
+        (candidate) => candidate.type === "recovery-before-route-blocked",
+      );
+      if (typeof message.commandId !== "string") {
+        throw new Error("Blocked recovery command has no ID");
+      }
+      return message.commandId;
+    },
+    async stageProviderKey(label) {
+      requestId += 1;
+      const currentRequestId = `provider-stage-${requestId}`;
+      child.send({ type: "stage-provider-key", requestId: currentRequestId, label });
+      const message = await waitFor(
+        (candidate) =>
+          candidate.type === "provider-key-staged" &&
+          candidate.requestId === currentRequestId,
+      );
+      if (typeof message.provisioningRef !== "string") {
+        throw new Error("Provider stage fixture returned no provisioning reference");
+      }
+      return message.provisioningRef;
+    },
     async disconnect(code, reason) {
       child.send({
         type: "disconnect",
@@ -366,7 +411,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
           );
         });
       } finally {
-        await rm(homeDirectory, { recursive: true, force: true });
+        await Promise.all([
+          rm(homeDirectory, { recursive: true, force: true }),
+          rm(`${homeDirectory}-credential-state`, { recursive: true, force: true }),
+        ]);
       }
       if (cleanupError !== null) throw cleanupError;
       if (child.exitCode !== 0) {

@@ -15,7 +15,7 @@
     "preinstall": "node scripts/check-node-version.mjs",
     "build": "pnpm -r build && node scripts/check-package-exports.mjs",
     "start": "node apps/server/dist/main.js",
-    "build:test-deps": "pnpm --filter @wi/test-support build && pnpm --filter @wi/protocol build && pnpm --filter @wi/client-state build && pnpm --filter @wi/provider-contract build && pnpm --filter @wi/tools build && pnpm --filter @wi/provider-fake build && pnpm --filter @wi/storage build && pnpm --filter @wi/harness-core build && pnpm --filter @wi/server build",
+    "build:test-deps": "pnpm --filter @wi/test-support build && pnpm --filter @wi/protocol build && pnpm --filter @wi/client-state build && pnpm --filter @wi/provider-contract build && pnpm --filter @wi/provider-connections build && pnpm --filter @wi/credentials build && pnpm --filter @wi/tools build && pnpm --filter @wi/provider-fake build && pnpm --filter @wi/storage build && pnpm --filter @wi/harness-core build && pnpm --filter @wi/server build",
     "typecheck": "pnpm build:test-deps && tsc -p tsconfig.json && pnpm -r typecheck",
     "lint": "eslint .",
     "test": "pnpm build:test-deps && vitest run --workspace vitest.workspace.ts",
@@ -26,6 +26,7 @@
     "test:fuzz:extended": "node scripts/run-fuzz.mjs extended",
     "test:process": "pnpm build:test-deps && vitest run --workspace vitest.workspace.ts --project process --passWithNoTests",
     "test:e2e": "pnpm build && playwright test",
+    "credentials:provision": "pnpm --filter @wi/server credentials:provision",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
   "devDependencies": {
@@ -35,6 +36,8 @@
     "@types/ws": "8.18.1",
     "@wi/protocol": "workspace:*",
     "@wi/provider-contract": "workspace:*",
+    "@wi/provider-connections": "workspace:*",
+    "@wi/credentials": "workspace:*",
     "@wi/provider-fake": "workspace:*",
     "@wi/storage": "workspace:*",
     "@wi/test-support": "workspace:*",

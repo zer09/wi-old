@@ -520,6 +520,8 @@ function execute(operation: string, payloadValue: unknown): unknown {
       return repository.getEventById(z.string().min(1).parse(payload.eventId));
     case "session.getRun":
       return repository.getRun(z.string().min(1).parse(payload.runId));
+    case "session.getProviderDefault":
+      return repository.getSessionProviderDefault();
     case "session.getRunProviderMatch":
       return repository.getRunProviderMatch(
         z.string().min(1).parse(payload.runId),

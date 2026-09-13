@@ -9,10 +9,20 @@ import {
   CommandIdSchema,
   InputIdSchema,
   ProjectIdSchema,
+  ProviderConnectionIdSchema,
+  ProvisioningRefSchema,
+  RecoveryEpochIdSchema,
+  RecoveryRefSchema,
   RequestIdSchema,
   RunIdSchema,
   SessionIdSchema,
 } from "./ids.js";
+import {
+  CredentialRecoveryExpectedSchema,
+  EnvironmentVariableNameSchema,
+  ProviderConnectionDisplayNameSchema,
+  SessionProviderDefaultRequestSchema,
+} from "./providers.js";
 import { ApprovalResolutionSchema } from "./tools.js";
 
 export const COMMAND_METHODS = [
@@ -21,6 +31,16 @@ export const COMMAND_METHODS = [
   "run.cancel",
   "approval.resolve",
   "input.respond",
+  "providerConnection.file.create",
+  "providerConnection.environment.create",
+  "providerConnection.environment.revalidate",
+  "providerConnection.file.replace",
+  "providerConnection.rename",
+  "providerConnection.disable",
+  "providerConnection.logout",
+  "providerConnection.delete",
+  "providerConnection.recover",
+  "session.providerDefault.set",
 ] as const;
 
 export const CommandMethodSchema = z.enum(COMMAND_METHODS);
@@ -47,6 +67,56 @@ const ApprovalResolveParamsSchema = z.strictObject({
 const InputRespondParamsSchema = z.strictObject({
   inputId: InputIdSchema,
   value: CanonicalJsonValueSchema,
+});
+
+const FileConnectionCreateParamsSchema = z.strictObject({
+  providerId: z.literal("openai_platform"),
+  authMode: z.literal("api_key"),
+  displayName: ProviderConnectionDisplayNameSchema,
+  provisioningRef: ProvisioningRefSchema,
+});
+
+const EnvironmentConnectionCreateParamsSchema = z.strictObject({
+  providerId: z.literal("openai_platform"),
+  authMode: z.literal("api_key"),
+  displayName: ProviderConnectionDisplayNameSchema,
+  variableName: EnvironmentVariableNameSchema,
+});
+
+const EnvironmentConnectionRevalidateParamsSchema = z.strictObject({
+  connectionId: ProviderConnectionIdSchema,
+  expectedLifecycleRevision: z.number().int().positive().safe(),
+  expectedGeneration: z.number().int().positive().safe(),
+});
+
+const FileConnectionReplaceParamsSchema = z.strictObject({
+  connectionId: ProviderConnectionIdSchema,
+  expectedLifecycleRevision: z.number().int().positive().safe(),
+  expectedGeneration: z.number().int().positive().safe(),
+  provisioningRef: ProvisioningRefSchema,
+});
+
+const ProviderConnectionRenameParamsSchema = z.strictObject({
+  connectionId: ProviderConnectionIdSchema,
+  expectedMetadataRevision: z.number().int().positive().safe(),
+  displayName: ProviderConnectionDisplayNameSchema,
+});
+
+const ProviderConnectionLifecycleParamsSchema = z.strictObject({
+  connectionId: ProviderConnectionIdSchema,
+  expectedLifecycleRevision: z.number().int().positive().safe(),
+  expectedGeneration: z.number().int().positive().safe(),
+});
+
+const ProviderConnectionRecoverParamsSchema = z.strictObject({
+  recoveryRef: RecoveryRefSchema,
+  recoveryEpochId: RecoveryEpochIdSchema,
+  expected: CredentialRecoveryExpectedSchema,
+  displayName: ProviderConnectionDisplayNameSchema,
+});
+
+const SessionProviderDefaultSetParamsSchema = z.strictObject({
+  default: SessionProviderDefaultRequestSchema,
 });
 
 const CommandBaseSchema = z.strictObject({
@@ -84,12 +154,64 @@ export const InputRespondCommandSchema = CommandBaseSchema.extend({
   params: InputRespondParamsSchema,
 });
 
+export const FileConnectionCreateCommandSchema = CommandBaseSchema.extend({
+  method: z.literal("providerConnection.file.create"),
+  params: FileConnectionCreateParamsSchema,
+});
+export const EnvironmentConnectionCreateCommandSchema = CommandBaseSchema.extend({
+  method: z.literal("providerConnection.environment.create"),
+  params: EnvironmentConnectionCreateParamsSchema,
+});
+export const EnvironmentConnectionRevalidateCommandSchema = CommandBaseSchema.extend({
+  method: z.literal("providerConnection.environment.revalidate"),
+  params: EnvironmentConnectionRevalidateParamsSchema,
+});
+export const FileConnectionReplaceCommandSchema = CommandBaseSchema.extend({
+  method: z.literal("providerConnection.file.replace"),
+  params: FileConnectionReplaceParamsSchema,
+});
+export const ProviderConnectionRenameCommandSchema = CommandBaseSchema.extend({
+  method: z.literal("providerConnection.rename"),
+  params: ProviderConnectionRenameParamsSchema,
+});
+export const ProviderConnectionDisableCommandSchema = CommandBaseSchema.extend({
+  method: z.literal("providerConnection.disable"),
+  params: ProviderConnectionLifecycleParamsSchema,
+});
+export const ProviderConnectionLogoutCommandSchema = CommandBaseSchema.extend({
+  method: z.literal("providerConnection.logout"),
+  params: ProviderConnectionLifecycleParamsSchema,
+});
+export const ProviderConnectionDeleteCommandSchema = CommandBaseSchema.extend({
+  method: z.literal("providerConnection.delete"),
+  params: ProviderConnectionLifecycleParamsSchema,
+});
+export const ProviderConnectionRecoverCommandSchema = CommandBaseSchema.extend({
+  method: z.literal("providerConnection.recover"),
+  params: ProviderConnectionRecoverParamsSchema,
+});
+export const SessionProviderDefaultSetCommandSchema = CommandBaseSchema.extend({
+  sessionId: SessionIdSchema,
+  method: z.literal("session.providerDefault.set"),
+  params: SessionProviderDefaultSetParamsSchema,
+});
+
 export const CommandMessageSchema = z.discriminatedUnion("method", [
   SessionCreateCommandSchema,
   MessageSubmitCommandSchema,
   RunCancelCommandSchema,
   ApprovalResolveCommandSchema,
   InputRespondCommandSchema,
+  FileConnectionCreateCommandSchema,
+  EnvironmentConnectionCreateCommandSchema,
+  EnvironmentConnectionRevalidateCommandSchema,
+  FileConnectionReplaceCommandSchema,
+  ProviderConnectionRenameCommandSchema,
+  ProviderConnectionDisableCommandSchema,
+  ProviderConnectionLogoutCommandSchema,
+  ProviderConnectionDeleteCommandSchema,
+  ProviderConnectionRecoverCommandSchema,
+  SessionProviderDefaultSetCommandSchema,
 ]);
 
 export const ResumeCursorSchema = z.strictObject({
@@ -138,6 +260,16 @@ export type MessageSubmitCommand = z.infer<typeof MessageSubmitCommandSchema>;
 export type RunCancelCommand = z.infer<typeof RunCancelCommandSchema>;
 export type ApprovalResolveCommand = z.infer<typeof ApprovalResolveCommandSchema>;
 export type InputRespondCommand = z.infer<typeof InputRespondCommandSchema>;
+export type FileConnectionCreateCommand = z.infer<typeof FileConnectionCreateCommandSchema>;
+export type EnvironmentConnectionCreateCommand = z.infer<typeof EnvironmentConnectionCreateCommandSchema>;
+export type EnvironmentConnectionRevalidateCommand = z.infer<typeof EnvironmentConnectionRevalidateCommandSchema>;
+export type FileConnectionReplaceCommand = z.infer<typeof FileConnectionReplaceCommandSchema>;
+export type ProviderConnectionRenameCommand = z.infer<typeof ProviderConnectionRenameCommandSchema>;
+export type ProviderConnectionDisableCommand = z.infer<typeof ProviderConnectionDisableCommandSchema>;
+export type ProviderConnectionLogoutCommand = z.infer<typeof ProviderConnectionLogoutCommandSchema>;
+export type ProviderConnectionDeleteCommand = z.infer<typeof ProviderConnectionDeleteCommandSchema>;
+export type ProviderConnectionRecoverCommand = z.infer<typeof ProviderConnectionRecoverCommandSchema>;
+export type SessionProviderDefaultSetCommand = z.infer<typeof SessionProviderDefaultSetCommandSchema>;
 export type CommandMessage = z.infer<typeof CommandMessageSchema>;
 export type HelloMessage = z.infer<typeof HelloMessageSchema>;
 export type SubscribeMessage = z.infer<typeof SubscribeMessageSchema>;

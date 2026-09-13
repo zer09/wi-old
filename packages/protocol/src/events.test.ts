@@ -28,6 +28,19 @@ const digest = "a".repeat(64);
 
 const eventData: Record<SessionEventType, unknown> = {
   "session.created": { eventVersion: 1, title: "Session A" },
+  "session.provider_default.set": {
+    eventVersion: 1,
+    default: {
+      version: 1,
+      policy: { kind: "explicit", connectionId: "pconn_A" },
+      modelId: "fixture-model",
+      capabilitiesVersion: "capver_A",
+      promptVersion: "prompt-v1",
+      toolSchemaHash: digest,
+      reasoning: { effort: "none", summary: "none" },
+      transportMode: "no_network_fixture",
+    },
+  },
   "user.message.appended": { ...run, messageId: "msg_user", text: "hello" },
   "run.created": run,
   "run.started": run,

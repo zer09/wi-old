@@ -10,6 +10,7 @@ import {
   type SessionActor,
 } from "@wi/harness-core";
 import {
+  canonicalJson,
   createId,
   toBrowserSessionEvent,
   type ClientMessage,
@@ -20,6 +21,7 @@ import {
 import type { SessionClient } from "@wi/storage";
 import WebSocket, { type RawData } from "ws";
 import type { WiRuntime } from "../composition.js";
+import type { RecoveryIngressRegistration } from "../provider-connections/recovery-ingress.js";
 import { nonThrowingLogger, type Logger } from "../logging/logger.js";
 import { malformedPayloadMetadata } from "../logging/redaction.js";
 import { CommandRoutingError } from "./command-router.js";
@@ -380,18 +382,75 @@ export class BrowserConnection {
       void this.cleanup();
       return;
     }
+    let recoveryIngress: RecoveryIngressRegistration | null = null;
+    try {
+      const candidate = decodeClientFrame(bytes, isBinary, this.limits.frame);
+      if (
+        this.welcomed &&
+        candidate.kind === "command" &&
+        candidate.method === "providerConnection.recover"
+      ) {
+        const commandBytes = Math.max(
+          bytes.byteLength,
+          Buffer.byteLength(canonicalJson(candidate), "utf8"),
+        );
+        const registration = this.runtime.providerConnections.registerRecoveryIngress(
+          candidate.commandId,
+          candidate.params.recoveryEpochId,
+          {
+            expected: candidate.params.expected,
+            displayName: candidate.params.displayName,
+          },
+          commandBytes,
+        );
+        if (registration.state === "saturated") {
+          const safe = mapCommandError(
+            new CommandRoutingError(
+              "provider.rate_limited",
+              "The provider connection recovery queue is temporarily full.",
+            ),
+            this.runtime.diagnosticId,
+          );
+          this.logger.warn("websocket_recovery_ingress_rejected", {
+            diagnosticId: safe.diagnosticId,
+            connectionId: this.connectionId,
+            clientId: this.clientId,
+            commandId: candidate.commandId,
+            code: safe.code,
+          });
+          this.send({
+            v: 1,
+            kind: "command.rejected",
+            commandId: candidate.commandId,
+            code: safe.code,
+            message: safe.message,
+            diagnosticId: safe.diagnosticId,
+            recoverable: safe.recoverable,
+          });
+          return;
+        }
+        recoveryIngress = registration;
+      }
+    } catch {
+      // The serialized frame processor emits the bounded protocol error.
+    }
     this.pendingInboundMessages += 1;
     this.pendingInboundBytes += bytes.byteLength;
     this.inboundTail = this.inboundTail
-      .then(() => this.processFrame(bytes, isBinary))
+      .then(() => this.processFrame(bytes, isBinary, recoveryIngress))
       .catch((error: unknown) => this.internalConnectionFailure(error))
       .finally(() => {
+        recoveryIngress?.release();
         this.pendingInboundMessages -= 1;
         this.pendingInboundBytes -= bytes.byteLength;
       });
   }
 
-  private async processFrame(bytes: Uint8Array, isBinary: boolean): Promise<void> {
+  private async processFrame(
+    bytes: Uint8Array,
+    isBinary: boolean,
+    recoveryIngress: RecoveryIngressRegistration | null = null,
+  ): Promise<void> {
     if (this.closed) return;
     let message: ClientMessage;
     try {
@@ -434,7 +493,7 @@ export class BrowserConnection {
         await this.unsubscribe(message.sessionId);
         return;
       case "command":
-        await this.command(message);
+        await this.command(message, recoveryIngress);
         return;
       case "heartbeat":
         this.send({ v: 1, kind: "heartbeat", serverTimeMs: this.runtime.now() });
@@ -502,6 +561,7 @@ export class BrowserConnection {
 
   private async command(
     message: Extract<ClientMessage, { readonly kind: "command" }>,
+    recoveryIngress: RecoveryIngressRegistration | null,
   ): Promise<void> {
     try {
       if (durableCommandPayloadBytes(message) > this.limits.maximumDurableCommandPayloadBytes) {
@@ -511,7 +571,11 @@ export class BrowserConnection {
         );
       }
       await this.runCommandHook("before_route", () => this.commandHooks.beforeRoute?.(message));
-      const accepted = await this.runtime.commandRouter.route(message, this.clientId ?? "unknown");
+      const accepted = await this.runtime.commandRouter.route(
+        message,
+        this.clientId ?? "unknown",
+        recoveryIngress === null ? {} : { recoveryIngressRegistration: recoveryIngress },
+      );
       await this.runCommandHook("after_route_before_send", () =>
         this.commandHooks.afterRouteBeforeSend?.(message, accepted),
       );

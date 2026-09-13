@@ -47,7 +47,13 @@ function fatal(
 function runTransition(event: SessionEvent): BrowserRunState | null {
   switch (event.eventType) {
     case "run.created":
-      return { runId: event.data.runId, state: "created" };
+      return {
+        runId: event.data.runId,
+        state: "created",
+        ...(event.data.eventVersion === 2
+          ? { providerSelection: event.data.providerSelection }
+          : {}),
+      };
     case "run.started":
       return { runId: event.data.runId, state: "running" };
     case "run.waiting_for_user":
@@ -83,7 +89,15 @@ function applyRunTransition(
     if (!allowedRunTransitions[current.state].has(transition.state)) {
       return fatal(state, "impossible_run_transition");
     }
-    return { ...state, activeRun: transition };
+    return {
+      ...state,
+      activeRun: {
+        ...transition,
+        ...(current.providerSelection === undefined
+          ? {}
+          : { providerSelection: current.providerSelection }),
+      },
+    };
   }
   if (transition.state === "created") {
     if (state.queuedRuns.some((run) => run.runId === transition.runId)) {
@@ -94,7 +108,7 @@ function applyRunTransition(
     }
     return {
       ...state,
-      queuedRuns: [...state.queuedRuns, { runId: transition.runId, state: "queued" }],
+      queuedRuns: [...state.queuedRuns, { ...transition, state: "queued" }],
     };
   }
   if (!terminalRunStates.has(current.state)) return fatal(state, "second_active_run");
@@ -106,7 +120,16 @@ function applyRunTransition(
   ) {
     return fatal(state, "impossible_run_transition");
   }
-  return { ...state, activeRun: transition, queuedRuns: state.queuedRuns.slice(1) };
+  return {
+    ...state,
+    activeRun: {
+      ...transition,
+      ...(queued.providerSelection === undefined
+        ? {}
+        : { providerSelection: queued.providerSelection }),
+    },
+    queuedRuns: state.queuedRuns.slice(1),
+  };
 }
 
 function removeInteractionsForRun<T extends { readonly runId: string }>(
@@ -126,12 +149,16 @@ function applyEventData(state: BrowserSessionState, event: SessionEvent): Browse
 
   let title = transitioned.title;
   let lastMessagePreview = transitioned.lastMessagePreview;
+  let providerDefault = transitioned.providerDefault;
   let pendingApprovals = transitioned.pendingApprovals;
   let pendingInputs = transitioned.pendingInputs;
 
   switch (event.eventType) {
     case "session.created":
       title = event.data.title;
+      break;
+    case "session.provider_default.set":
+      providerDefault = event.data.default;
       break;
     case "user.message.appended":
       lastMessagePreview = event.data.text.slice(0, 200);
@@ -179,7 +206,14 @@ function applyEventData(state: BrowserSessionState, event: SessionEvent): Browse
       break;
   }
 
-  return { ...transitioned, title, lastMessagePreview, pendingApprovals, pendingInputs };
+  return {
+    ...transitioned,
+    title,
+    lastMessagePreview,
+    ...(providerDefault === undefined ? {} : { providerDefault }),
+    pendingApprovals,
+    pendingInputs,
+  };
 }
 
 export function reduceSessionEvent(

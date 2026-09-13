@@ -1,6 +1,10 @@
 import type { Logger } from "../logging/logger.js";
 import { type CommandAcceptedMessage, type CommandMessage } from "@wi/protocol";
-import type { CommittedEventHub, SessionActorRegistry } from "@wi/harness-core";
+import type {
+  CommittedEventHub,
+  ResolvedSessionProviderDefaultCommand,
+  SessionActorRegistry,
+} from "@wi/harness-core";
 import type { SessionStoreManager } from "@wi/storage";
 
 export class CommandRoutingError extends Error {
@@ -14,6 +18,35 @@ export class CommandRoutingError extends Error {
   }
 }
 
+export type ProviderConnectionCommand = Extract<
+  CommandMessage,
+  { readonly method:
+      | "providerConnection.file.create"
+      | "providerConnection.environment.create"
+      | "providerConnection.environment.revalidate"
+      | "providerConnection.file.replace"
+      | "providerConnection.rename"
+      | "providerConnection.disable"
+      | "providerConnection.logout"
+      | "providerConnection.delete"
+      | "providerConnection.recover" }
+>;
+
+export interface CommandRouteOptions {
+  /** Internal backend capability proving recovery ingress was reserved before queueing. */
+  readonly recoveryIngressRegistration?: unknown;
+}
+
+export interface ProviderConnectionCommandHandler {
+  route(
+    command: ProviderConnectionCommand,
+    options?: CommandRouteOptions,
+  ): Promise<CommandAcceptedMessage>;
+  resolveSessionDefault(
+    command: Extract<CommandMessage, { readonly method: "session.providerDefault.set" }>,
+  ): Promise<ResolvedSessionProviderDefaultCommand["params"]["default"]>;
+}
+
 export class CommandRouter {
   private accepting = true;
 
@@ -23,17 +56,41 @@ export class CommandRouter {
     private readonly eventHub: CommittedEventHub,
     private readonly logger: Logger,
     private readonly diagnosticId: () => string,
+    private readonly providerCommands?: ProviderConnectionCommandHandler,
   ) {}
 
   stopAccepting(): void {
     this.accepting = false;
   }
 
-  async route(command: CommandMessage, clientId: string): Promise<CommandAcceptedMessage> {
+  async route(
+    command: CommandMessage,
+    clientId: string,
+    options: CommandRouteOptions = {},
+  ): Promise<CommandAcceptedMessage> {
     if (!this.accepting) {
       throw new CommandRoutingError("storage.worker_failed", "The server is shutting down");
     }
     if (command.method === "session.create") return this.createSession(command);
+    if (
+      command.method === "providerConnection.file.create" ||
+      command.method === "providerConnection.environment.create" ||
+      command.method === "providerConnection.environment.revalidate" ||
+      command.method === "providerConnection.file.replace" ||
+      command.method === "providerConnection.rename" ||
+      command.method === "providerConnection.disable" ||
+      command.method === "providerConnection.logout" ||
+      command.method === "providerConnection.delete" ||
+      command.method === "providerConnection.recover"
+    ) {
+      if (this.providerCommands === undefined) {
+        throw new CommandRoutingError(
+          "provider.not_implemented",
+          "Provider connection management is unavailable",
+        );
+      }
+      return this.providerCommands.route(command, options);
+    }
 
     const summary = await this.storage.catalog.getSession(command.sessionId);
     if (summary === null || summary.status === "missing") {
@@ -66,6 +123,19 @@ export class CommandRouter {
         }
         case "input.respond": {
           const acceptance = await lease.actor.respondToInput(command);
+          return this.accepted(command, acceptance);
+        }
+        case "session.providerDefault.set": {
+          if (this.providerCommands === undefined) {
+            throw new CommandRoutingError(
+              "provider.not_implemented",
+              "Provider connection selection is unavailable",
+            );
+          }
+          const acceptance = await lease.actor.setProviderDefault(
+            command,
+            () => this.providerCommands!.resolveSessionDefault(command),
+          );
           return this.accepted(command, acceptance);
         }
       }
@@ -109,7 +179,7 @@ export class CommandRouter {
   }
 
   private accepted(
-    command: Exclude<CommandMessage, { readonly method: "session.create" }>,
+    command: Extract<CommandMessage, { readonly sessionId: string }>,
     acceptance: {
       readonly acceptedSequence: number | null;
       readonly runId: string | null;

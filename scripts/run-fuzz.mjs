@@ -93,6 +93,9 @@ const fuzzTestFiles = [
   "tests/property/storage-event-store.test.ts",
   "tests/property/harness-core.test.ts",
   "tests/property/client-reducer.test.ts",
+  "tests/property/provider-lifecycle.test.ts",
+  "tests/property/provider-credential-evidence.test.ts",
+  "tests/property/provider-control-plane-model.test.ts",
   "tests/property/milestone5-gateway.test.ts",
   "tests/property/milestone4-agent-loop-model.test.ts",
 ];

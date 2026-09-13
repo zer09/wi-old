@@ -7,7 +7,10 @@ import {
   type InputRespondCommand,
   type MessageSubmitCommand,
   type RunCancelCommand,
+  type RunProviderSelectionSnapshot,
   type RunState,
+  type SessionProviderDefault,
+  type SessionProviderDefaultSetCommand,
   RunStateSchema,
   type SessionEvent,
   type ToolEffectClass,
@@ -49,6 +52,13 @@ import {
   ShutdownTimeoutError,
   type ShutdownWait,
 } from "./shutdown.js";
+
+export type ResolvedSessionProviderDefaultCommand = Omit<
+  SessionProviderDefaultSetCommand,
+  "params"
+> & {
+  readonly params: { readonly default: SessionProviderDefault };
+};
 
 export class SessionActorError extends Error {
   constructor(readonly code: string, message: string) {
@@ -107,7 +117,8 @@ export type SessionActorTestFailpoint =
   | "after_tool_started_commit"
   | "after_tool_result_commit_before_provider_continue"
   | "after_provider_text_commit"
-  | "after_run_terminal_commit";
+  | "after_run_terminal_commit"
+  | "after_environment_run_acceptance_before_request";
 
 export interface SessionActorTestFailpoints {
   readonly matches: (
@@ -341,11 +352,13 @@ export interface RunTaskContext {
 export interface RunProviderSnapshot {
   readonly providerId: string;
   readonly providerConfig: CanonicalJsonValue;
+  readonly providerSelection?: RunProviderSelectionSnapshot | null;
 }
 
 export type CreateRunProviderSnapshot = (
   command: MessageSubmitCommand,
-) => RunProviderSnapshot;
+  runId: string,
+) => RunProviderSnapshot | Promise<RunProviderSnapshot>;
 
 export interface RunTaskResult {
   readonly state: RunTaskTerminalState;
@@ -478,10 +491,17 @@ export class SessionActor {
   private readonly now: () => number;
   private readonly runTask: RunTask;
   private readonly createRunProviderSnapshot: CreateRunProviderSnapshot;
+  private readonly onRunProviderSnapshotAccepted: ((runId: string) => void) | undefined;
+  private readonly onRunProviderSnapshotRejected:
+    | ((runId: string) => void | Promise<void>)
+    | undefined;
   private readonly runTaskOwnsSchedulerPermits: boolean;
   private readonly resumeRestoredRuns: boolean;
   private readonly currentToolEffectClass:
     | ((toolName: string) => ToolEffectClass | null)
+    | undefined;
+  private readonly shouldInterruptRestoredRun:
+    | ((run: RunRecord) => boolean)
     | undefined;
   private readonly cancelRunTask: CancelRunTask;
   private readonly forceStopRunTask: ForceStopRunTask;
@@ -525,9 +545,12 @@ export class SessionActor {
     readonly now: () => number;
     readonly runTask: RunTask;
     readonly createRunProviderSnapshot?: CreateRunProviderSnapshot;
+    readonly onRunProviderSnapshotAccepted?: (runId: string) => void;
+    readonly onRunProviderSnapshotRejected?: (runId: string) => void | Promise<void>;
     readonly runTaskOwnsSchedulerPermits?: boolean;
     readonly resumeRestoredRuns?: boolean;
     readonly currentToolEffectClass?: (toolName: string) => ToolEffectClass | null;
+    readonly shouldInterruptRestoredRun?: (run: RunRecord) => boolean;
     readonly cancelRunTask: CancelRunTask;
     readonly forceStopRunTask: ForceStopRunTask;
     readonly cancellationWait?: ShutdownWait;
@@ -549,9 +572,12 @@ export class SessionActor {
     this.createRunProviderSnapshot =
       options.createRunProviderSnapshot ??
       (() => ({ providerId: "milestone-3-task", providerConfig: { milestone: 3 } }));
+    this.onRunProviderSnapshotAccepted = options.onRunProviderSnapshotAccepted;
+    this.onRunProviderSnapshotRejected = options.onRunProviderSnapshotRejected;
     this.runTaskOwnsSchedulerPermits = options.runTaskOwnsSchedulerPermits === true;
     this.resumeRestoredRuns = options.resumeRestoredRuns === true;
     this.currentToolEffectClass = options.currentToolEffectClass;
+    this.shouldInterruptRestoredRun = options.shouldInterruptRestoredRun;
     this.cancelRunTask = options.cancelRunTask;
     this.forceStopRunTask = options.forceStopRunTask;
     this.cancellationWait = options.cancellationWait ?? defaultShutdownWait;
@@ -572,9 +598,12 @@ export class SessionActor {
     readonly now: () => number;
     readonly runTask: RunTask;
     readonly createRunProviderSnapshot?: CreateRunProviderSnapshot;
+    readonly onRunProviderSnapshotAccepted?: (runId: string) => void;
+    readonly onRunProviderSnapshotRejected?: (runId: string) => void | Promise<void>;
     readonly runTaskOwnsSchedulerPermits?: boolean;
     readonly resumeRestoredRuns?: boolean;
     readonly currentToolEffectClass?: (toolName: string) => ToolEffectClass | null;
+    readonly shouldInterruptRestoredRun?: (run: RunRecord) => boolean;
     readonly cancelRunTask: CancelRunTask;
     readonly forceStopRunTask: ForceStopRunTask;
     readonly cancellationWait?: ShutdownWait;
@@ -1118,6 +1147,56 @@ export class SessionActor {
     });
   }
 
+  private async interruptRestoredRun(run: RunRecord): Promise<void> {
+    const interruptedAtMs = this.now();
+    const diagnosticId = this.ids.diagnosticId();
+    const projections: AppendTransactionInput["projections"] = [
+      ...(run.state === "queued"
+        ? [{
+            kind: "run.state" as const,
+            runId: run.runId,
+            expectedState: "queued" as const,
+            nextState: "running" as const,
+            startedAtMs: run.startedAtMs ?? interruptedAtMs,
+            completedAtMs: null,
+            cancelledAtMs: run.cancelledAtMs,
+            failureCategory: null,
+            failureMessage: null,
+            activeProviderStepId: run.activeProviderStepId,
+          }]
+        : []),
+      {
+        kind: "run.state",
+        runId: run.runId,
+        expectedState: run.state === "queued" ? "running" : run.state,
+        nextState: "interrupted",
+        startedAtMs: run.startedAtMs ?? interruptedAtMs,
+        completedAtMs: interruptedAtMs,
+        cancelledAtMs: run.cancelledAtMs,
+        failureCategory: "provider.incomplete",
+        failureMessage: "Environment-backed provider work cannot resume after backend restart.",
+        activeProviderStepId: null,
+      },
+      { kind: "run.pendingInteractions.cancel", runId: run.runId, cancelledAtMs: interruptedAtMs },
+    ];
+    const committed = await this.storage.appendTransaction({
+      events: [{
+        eventId: this.ids.eventId(),
+        eventType: "run.interrupted",
+        createdAtMs: interruptedAtMs,
+        data: {
+          eventVersion: 2,
+          runId: run.runId,
+          code: "provider.incomplete",
+          message: "Environment-backed provider work cannot resume after backend restart.",
+          diagnosticId,
+        },
+      }],
+      projections,
+    });
+    this.publish(committed.events);
+  }
+
   private async initialize(): Promise<void> {
     try {
       await recoverSession({
@@ -1135,11 +1214,20 @@ export class SessionActor {
           ? {}
           : { currentToolEffectClass: this.currentToolEffectClass }),
       });
-      const [runs, approvals, inputs] = await Promise.all([
+      let runs = await this.storage.getNonterminalRuns();
+      for (const run of runs) {
+        if (this.shouldInterruptRestoredRun?.(run) === true) {
+          await this.interruptRestoredRun(run);
+        }
+      }
+      const restoredState = await Promise.all([
         this.storage.getNonterminalRuns(),
         this.storage.getPendingApprovals(),
         this.storage.getPendingInputs(),
       ]);
+      runs = restoredState[0];
+      const approvals = restoredState[1];
+      const inputs = restoredState[2];
       for (const approval of approvals) this.pendingApprovals.set(approval.approvalId, approval);
       for (const input of inputs) this.pendingInputs.set(input.inputId, input);
 
@@ -1219,6 +1307,61 @@ export class SessionActor {
     return this.snapshot.idle;
   }
 
+  setProviderDefault(
+    command: SessionProviderDefaultSetCommand,
+    resolveDefault: () => ResolvedSessionProviderDefaultCommand["params"]["default"] | Promise<ResolvedSessionProviderDefaultCommand["params"]["default"]>,
+  ): Promise<AcceptedCommandResult> {
+    const unavailable = this.rejectUnavailable<AcceptedCommandResult>();
+    if (unavailable !== null) return unavailable;
+    return this.mailbox.enqueue(async () => {
+      this.assertNotFaulted();
+      this.touch();
+      const payloadHash = await hashCommandContent(command);
+      const duplicate = await this.storage.getAcceptedCommand(command.commandId);
+      if (duplicate !== null) {
+        if (
+          duplicate.commandMethod !== command.method ||
+          duplicate.payloadHash !== payloadHash
+        ) {
+          throw new SessionActorError(
+            "protocol.command_id_conflict",
+            `Command ${command.commandId} was reused with different content`,
+          );
+        }
+        return duplicate;
+      }
+      const resolvedDefault = await resolveDefault();
+      const createdAtMs = this.now();
+      const eventId = this.ids.eventId();
+      const acceptance = await this.acceptCommand({
+        commandId: command.commandId,
+        commandMethod: command.method,
+        payloadHash,
+        result: {
+          connectionId: resolvedDefault.policy.connectionId,
+          modelId: resolvedDefault.modelId,
+        },
+        acceptedAtMs: createdAtMs,
+        runId: null,
+        transaction: {
+          events: [{
+            eventId,
+            eventType: "session.provider_default.set",
+            createdAtMs,
+            data: { eventVersion: 1, default: resolvedDefault },
+          }],
+          projections: [{
+            kind: "session.providerDefault.put",
+            default: resolvedDefault,
+            eventId,
+          }],
+        },
+      });
+      this.publish(acceptance.events);
+      return acceptance;
+    });
+  }
+
   submitMessage(command: MessageSubmitCommand): Promise<SubmitMessageResult> {
     const unavailable = this.rejectUnavailable<SubmitMessageResult>();
     if (unavailable !== null) return unavailable;
@@ -1231,23 +1374,30 @@ export class SessionActor {
       const wasQueued = this.activeRun !== null || this.queuedRuns.length > 0;
       const payloadHash = await hashCommandContent(command);
       const existingCommand = await this.storage.getAcceptedCommand(command.commandId);
-      let providerSnapshot: RunProviderSnapshot = { providerId: "duplicate", providerConfig: {} };
-      if (existingCommand === null) {
-        const createdProviderSnapshot = this.createRunProviderSnapshot(command);
-        if (createdProviderSnapshot.providerId.length === 0) {
-          throw new SessionActorError("provider.protocol_error", "Run provider ID is empty");
-        }
-        providerSnapshot = {
-          providerId: createdProviderSnapshot.providerId,
-          providerConfig: decodeProviderConfiguration(createdProviderSnapshot.providerConfig),
-        };
-      }
       const runId = existingCommand === null
         ? this.testFailpoints?.takeRunIdForCommand(
             this.sessionId,
             command.commandId,
           ) ?? generatedRunId
         : generatedRunId;
+      let providerSnapshot: RunProviderSnapshot = {
+        providerId: "duplicate",
+        providerConfig: {},
+        providerSelection: null,
+      };
+      let providerSnapshotCreated = false;
+      if (existingCommand === null) {
+        const createdProviderSnapshot = await this.createRunProviderSnapshot(command, runId);
+        providerSnapshotCreated = true;
+        if (createdProviderSnapshot.providerId.length === 0) {
+          throw new SessionActorError("provider.protocol_error", "Run provider ID is empty");
+        }
+        providerSnapshot = {
+          providerId: createdProviderSnapshot.providerId,
+          providerConfig: decodeProviderConfiguration(createdProviderSnapshot.providerConfig),
+          providerSelection: createdProviderSnapshot.providerSelection ?? null,
+        };
+      }
       const failpointFields = {
         sessionId: this.sessionId,
         commandId: command.commandId,
@@ -1280,7 +1430,13 @@ export class SessionActor {
               eventId: this.ids.eventId(),
               eventType: "run.created",
               createdAtMs,
-              data: { eventVersion: 1, runId },
+              data: providerSnapshot.providerSelection === null
+                ? { eventVersion: 1, runId }
+                : {
+                    eventVersion: 2,
+                    runId,
+                    providerSelection: providerSnapshot.providerSelection,
+                  },
             },
           ],
           projections: [
@@ -1290,6 +1446,7 @@ export class SessionActor {
               state: "queued",
               providerId: providerSnapshot.providerId,
               providerConfig: providerSnapshot.providerConfig,
+              providerSelection: providerSnapshot.providerSelection,
               createdAtMs,
               startedAtMs: null,
               completedAtMs: null,
@@ -1329,9 +1486,26 @@ export class SessionActor {
             failpointFields,
           );
         }
+        if (providerSnapshotCreated) {
+          try {
+            await this.onRunProviderSnapshotRejected?.(runId);
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              `Run provider snapshot cleanup failed for ${runId}`,
+            );
+          }
+        }
         throw error;
       }
+      if (providerSnapshotCreated) this.onRunProviderSnapshotAccepted?.(runId);
       this.hitCommittedFailpoints(acceptance.events, runId);
+      if (providerSnapshot.providerSelection?.credentialBackend.kind === "environment") {
+        this.testFailpoints?.hit(
+          "after_environment_run_acceptance_before_request",
+          failpointFields,
+        );
+      }
       this.publish(acceptance.events);
       const acceptedRunId = acceptance.runId;
       if (acceptedRunId === null) {

@@ -23,6 +23,7 @@ import {
   ProviderStepRecordSchema,
   RunMessageRecordSchema,
   RunRecordSchema,
+  SessionProviderDefaultRecordSchema,
   ToolExecutionRecordSchema,
   ProjectionMutationSchema,
   SESSION_EVENT_PAGE_BOUNDS,
@@ -46,6 +47,7 @@ import {
   type ProviderStepRecord,
   type RunMessageRecord,
   type RunRecord,
+  type SessionProviderDefaultRecord,
   type ToolExecutionRecord,
   type SessionCatalogObservation,
   type SessionCatalogProjection,
@@ -571,20 +573,45 @@ export class SessionRepository {
     const row = this.database
       .prepare(
         `SELECT run_id AS runId, state, provider_id AS providerId,
-                provider_config_json AS providerConfigJson, created_at_ms AS createdAtMs,
+                provider_config_json AS providerConfigJson,
+                provider_snapshot_json AS providerSnapshotJson,
+                created_at_ms AS createdAtMs,
                 started_at_ms AS startedAtMs, completed_at_ms AS completedAtMs,
                 cancelled_at_ms AS cancelledAtMs, failure_category AS failureCategory,
                 failure_message AS failureMessage,
                 active_provider_step_id AS activeProviderStepId
          FROM runs WHERE run_id = ?`,
       )
-      .get(runId) as (Omit<RunRecord, "providerConfig"> & { providerConfigJson: string }) | undefined;
+      .get(runId) as
+        | (Omit<RunRecord, "providerConfig" | "providerSelection"> & {
+            providerConfigJson: string;
+            providerSnapshotJson: string | null;
+          })
+        | undefined;
     if (row === undefined) return null;
-    const { providerConfigJson, ...record } = row;
+    const { providerConfigJson, providerSnapshotJson, ...record } = row;
     return decodeStoredValue(`run ${runId}`, () =>
       RunRecordSchema.parse({
         ...record,
         providerConfig: CanonicalJsonValueSchema.parse(JSON.parse(providerConfigJson) as unknown),
+        providerSelection: providerSnapshotJson === null
+          ? null
+          : JSON.parse(providerSnapshotJson) as unknown,
+      }),
+    );
+  }
+
+  getSessionProviderDefault(): SessionProviderDefaultRecord | null {
+    const row = this.database.prepare(
+      `SELECT default_json AS defaultJson, updated_sequence AS updatedSequence,
+              event_id AS eventId FROM session_provider_default WHERE singleton = 1`,
+    ).get() as { defaultJson: string; updatedSequence: number; eventId: string } | undefined;
+    if (row === undefined) return null;
+    return decodeStoredValue("session provider default", () =>
+      SessionProviderDefaultRecordSchema.parse({
+        default: JSON.parse(row.defaultJson) as unknown,
+        updatedSequence: row.updatedSequence,
+        eventId: row.eventId,
       }),
     );
   }
@@ -917,6 +944,7 @@ export class SessionRepository {
         `SELECT runs.run_id AS runId, runs.state,
                 runs.provider_id AS providerId,
                 runs.provider_config_json AS providerConfigJson,
+                runs.provider_snapshot_json AS providerSnapshotJson,
                 runs.created_at_ms AS createdAtMs,
                 runs.started_at_ms AS startedAtMs,
                 runs.completed_at_ms AS completedAtMs,
@@ -931,12 +959,18 @@ export class SessionRepository {
          ORDER BY command.accepted_sequence IS NULL, command.accepted_sequence,
                   runs.created_at_ms, runs.run_id`,
       )
-      .all() as (Omit<RunRecord, "providerConfig"> & { providerConfigJson: string })[];
-    return rows.map(({ providerConfigJson, ...record }) =>
+      .all() as (Omit<RunRecord, "providerConfig" | "providerSelection"> & {
+        providerConfigJson: string;
+        providerSnapshotJson: string | null;
+      })[];
+    return rows.map(({ providerConfigJson, providerSnapshotJson, ...record }) =>
       decodeStoredValue(`run ${record.runId}`, () =>
         RunRecordSchema.parse({
           ...record,
           providerConfig: CanonicalJsonValueSchema.parse(JSON.parse(providerConfigJson) as unknown),
+          providerSelection: providerSnapshotJson === null
+            ? null
+            : JSON.parse(providerSnapshotJson) as unknown,
         }),
       ),
     );

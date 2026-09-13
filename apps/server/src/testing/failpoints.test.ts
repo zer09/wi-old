@@ -238,6 +238,54 @@ describe("test-only failpoint controls", () => {
       after_catalog_replacement_before_repair: {
         WI_TEST_FAILPOINT_CATALOG_GLOBAL: "1",
       },
+      after_provider_lifecycle_prepare: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_file_effect: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_file_observed: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_lifecycle_terminal_before_ack: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_stage_cleanup: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_stage_temp_flush: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_credential_temp_flush: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_stage_commit: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      before_provider_provisioning_ref_return: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_recovery_admission: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_recovery_prepare: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_environment_run_acceptance_before_request: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_stage_delete_before_flush: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_credential_rename_before_flush: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_credential_unlink_before_flush: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
+      after_provider_stage_rename_before_flush: {
+        WI_TEST_FAILPOINT_COMMAND_ID: "cmd_target",
+      },
     } as const;
     for (const [index, name] of TEST_FAILPOINTS.entries()) {
       const controller = createTestFailpointController({

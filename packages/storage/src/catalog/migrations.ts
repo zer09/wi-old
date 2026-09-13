@@ -41,6 +41,10 @@ export const catalogMigrations: readonly Migration[] = [
         CHECK (unavailable_reason IS NULL OR unavailable_reason = 'quarantined');
     `,
   },
+  {
+    version: 6,
+    sql: readFileSync(new URL("./migration-v6.sql", import.meta.url), "utf8"),
+  },
 ];
 
 export { CATALOG_SCHEMA_VERSION };

@@ -15,6 +15,8 @@ export default defineWorkspace([
       name: "unit",
       environment: "node",
       include: ["apps/**/*.test.ts", "packages/**/*.test.ts"],
+      pool: "threads",
+      poolOptions: { threads: { singleThread: true } },
     },
   },
   {
@@ -22,6 +24,9 @@ export default defineWorkspace([
       name: "architecture",
       environment: "node",
       include: ["tests/architecture/**/*.test.ts", "tests/preflight/**/*.test.ts"],
+      pool: "threads",
+      poolOptions: { threads: { singleThread: true } },
+      testTimeout: 10_000,
     },
   },
   {
@@ -29,6 +34,8 @@ export default defineWorkspace([
       name: "integration",
       environment: "node",
       include: ["tests/integration/**/*.test.ts"],
+      pool: "threads",
+      poolOptions: { threads: { singleThread: true } },
     },
   },
   {
@@ -37,6 +44,12 @@ export default defineWorkspace([
       environment: "node",
       include: ["tests/property/**/*.test.ts"],
       setupFiles: ["tests/property/support/fuzz-artifacts-setup.ts"],
+      ...(process.env.WI_FUZZ_PROFILE === undefined || process.env.WI_FUZZ_PROFILE === "property"
+        ? { pool: "threads" as const, poolOptions: { threads: { singleThread: true } } }
+        : {}),
+      // Property gates share CI capacity with worker/process suites and must finish
+      // their deterministic counterexample before reporting a timeout.
+      testTimeout: 15_000,
     },
   },
   {

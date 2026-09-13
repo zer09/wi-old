@@ -2,7 +2,7 @@
 
 Wi is a local, single-operating-system-user, Linux-only browser coding-agent harness. The browser is a disposable GUI; the Node.js backend owns sessions, runs, provider requests, approvals, tool execution, replay, and persistence.
 
-This repository implements the `v0.1.0` first vertical slice. It intentionally uses only a deterministic fake provider and safe built-in test tools. It does **not** include OpenAI integration, ChatGPT/Codex OAuth, `codex app-server`, real shell/filesystem mutation tools, plugins, remote hosting, or multi-user access.
+This repository includes the `v0.1.0` vertical slice and v0.2 Milestone 11 provider-connection infrastructure. Milestone 11 remains strictly fake/no-network: it adds durable provider connection identity, credential stores, explicit future-run selection, immutable run pinning, lifecycle recovery, and browser management, but no OpenAI requests or OAuth. It still does **not** include live OpenAI integration, ChatGPT/Codex OAuth, `codex app-server`, real shell/filesystem mutation tools, plugins, remote hosting, or multi-user access.
 
 ## Requirements
 
@@ -24,6 +24,8 @@ pnpm start
 ```
 
 Open <http://127.0.0.1:4317/>. Wi serves the built browser application and its authenticated `wi.v1` WebSocket from the same loopback origin. Stop it with `Ctrl-C`/`SIGINT` or `SIGTERM`; shutdown is bounded and does not treat browser disconnection as run cancellation.
+
+To stage a file-backed API key without placing it in shell arguments or browser storage, build first and run `pnpm credentials:provision` for masked TTY input. For an already-open descriptor, invoke the built Node entry point directly so a package-manager subprocess cannot reuse or close the descriptor: `node apps/server/dist/credential-cli.js --api-key-fd 3`. Paste only the returned one-time `provref_…` value into the provider connection panel.
 
 For an ephemeral port:
 

@@ -82,6 +82,8 @@ export type {
   PendingApprovalRecord,
   PendingInputRecord,
   ProjectRecord,
+  ProviderConnectionRecord,
+  ProviderLifecycleOperationRecord,
   ProviderStepRecord,
   ProjectionMutation,
   RunMessageRecord,

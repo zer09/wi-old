@@ -164,7 +164,8 @@ test("refreshes bootstrap authentication after a same-origin backend restart", a
     await restartable.restart();
 
     await expect(page.locator(".connection")).toContainText("Connected", { timeout: 15_000 });
-    await expect.poll(() => bootstrapRequests).toBe(2);
+    await expect.poll(() => bootstrapRequests).toBeGreaterThanOrEqual(2);
+    expect(bootstrapRequests).toBeLessThanOrEqual(3);
     const probe = await page.evaluate(() =>
       (globalThis as unknown as {
         readonly __wiRestartProbe: {

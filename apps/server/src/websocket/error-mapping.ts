@@ -32,7 +32,11 @@ const SAFE_MESSAGES: Partial<Record<ErrorCode, string>> = {
   "session.invalid_transition": "The command is not valid in the current session state.",
   "approval.already_resolved": "This approval was already resolved.",
   "input.already_resolved": "This input request was already resolved.",
+  "credential.recovery_connection_conflict": "The original provider connection is already occupied.",
+  "credential.recovery_identity_conflict": "The provider identity is already claimed by another connection.",
+  "credential.recovery_already_claimed": "The credential recovery evidence was already claimed.",
   "provider.cancelled": "The run operation was cancelled.",
+  "provider.rate_limited": "The provider connection recovery queue is temporarily full.",
   "websocket.slow_consumer": "The connection could not keep up with event delivery.",
 };
 
@@ -59,7 +63,10 @@ export function mapCommandError(
   const routingError = error instanceof CommandRoutingError ? error : null;
   const safeMessage = SafeDiagnosticMessageSchema.safeParse(routingError?.safeMessage);
   const durableDiagnosticId = DiagnosticIdSchema.safeParse(routingError?.diagnosticId);
-  const recoverable = code === "storage.busy" || code === "storage.worker_failed";
+  const recoverable =
+    code === "storage.busy" ||
+    code === "storage.worker_failed" ||
+    code === "provider.rate_limited";
   return {
     code,
     message: safeMessage.success

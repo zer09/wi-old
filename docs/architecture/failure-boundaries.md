@@ -318,7 +318,7 @@ Mandatory redaction:
 - cookies
 - authorization codes
 - sensitive callback query values
-- planned [`CredentialStore`](../adr/0014-wsl-file-credential-store.md) references when they reveal paths or handles (no provider credential store exists in v0.1)
+- Milestone 11 [`CredentialStore`](../adr/0014-wsl-file-credential-store.md) references when they reveal paths or handles (the released v0.1 product has no provider credential store)
 - arbitrary provider/tool payloads beyond bounded reviewed previews
 
 ## 17. No hidden fallback
@@ -350,6 +350,22 @@ after_run_terminal_commit
 after_session_create_before_catalog_ready
 after_catalog_session_repair
 after_catalog_replacement_before_repair
+after_provider_lifecycle_prepare
+after_provider_file_effect
+after_provider_file_observed
+after_provider_lifecycle_terminal_before_ack
+after_provider_stage_cleanup
+after_provider_stage_temp_flush
+after_provider_credential_temp_flush
+after_provider_stage_commit
+before_provider_provisioning_ref_return
+after_recovery_admission
+after_recovery_prepare
+after_environment_run_acceptance_before_request
+after_provider_stage_delete_before_flush
+after_provider_credential_rename_before_flush
+after_provider_credential_unlink_before_flush
+after_provider_stage_rename_before_flush
 ```
 
 A process test starts Wi, arms the failpoint with a strict test-only session/command/run or catalog-global selector, triggers the boundary, restarts using the same `WI_HOME`, and verifies the exact durable outcome. Run-scoped selectors bind in two stages: `commandId` and `sessionId` identify the target command when its deterministic selected `runId` is assigned, then committed publication/provider/tool/run boundaries match `sessionId + runId` before consuming the crash one-shot; they do not recheck `commandId` at that later boundary. Concurrent-session cases hold target A before the boundary, let unrelated B cross it without terminating Wi, then release A and require the documented exit. Unrelated sessions or commands cannot acquire the selected run ID or consume the one-shot.

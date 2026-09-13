@@ -23,9 +23,9 @@ Loopback is not a substitute for hostile-user isolation. Other processes owned b
 
 The browser is a temporary view, not the owner of runs or credentials. It keeps only a bounded unresolved-command/draft journal in `sessionStorage`. Provider/model/tool output is rendered as untrusted text; it is not inserted as active HTML. The browser stores no API keys, OAuth tokens, provider tokens, or durable backend state in localStorage, IndexedDB, or application-managed cookies.
 
-Planned Milestone 11 catalog-loss recovery never persists its one-time `recoveryRef` or complete recovery command in that journal. It stores only bounded nonsecret command/epoch reconciliation metadata and, after reload or lost acknowledgement, uses an authenticated non-mutating status read to obtain admission/validation pending, final not-accepted after epoch closure and drained ingress, or the original safe terminal result. The read cannot execute recovery or reveal/infer a reference, and final absence proves the old command cannot later claim evidence.
+Milestone 11 catalog-loss recovery never persists its one-time `recoveryRef` or complete recovery command in that journal. It stores only bounded nonsecret command/epoch reconciliation metadata and, after reload or lost acknowledgement, uses an authenticated non-mutating status read to obtain admission/validation pending, final not-accepted after epoch closure and drained ingress, or the original safe terminal result. The read cannot execute recovery or reveal/infer a reference, and final absence proves the old command cannot later claim evidence.
 
-A socket failure removes subscriptions only. It never implicitly cancels a run.
+A socket failure removes subscriptions only. It never implicitly cancels a run. Recovery ingress is bounded process-wide at 64 pending frames and 512 KiB of bounded raw/canonical command bytes across authenticated sockets and direct backend routing; saturated recovery frames receive only a safe typed `provider.rate_limited` rejection and create no durable effect. Public recovery-epoch cleanup invalidates unused references, while an already-consumed claim uses separately owned verifier evidence that is zeroized on disposal through final verification.
 
 ## Logs and diagnostics
 
@@ -46,15 +46,15 @@ Do not redirect production logs to a world-readable path. Diagnostic IDs are cor
 
 `WI_HOME` and generated subdirectories are private to the local user when Wi creates them. Wi does not chmod pre-existing parent directories. Browser input never supplies a session database path; paths derive from validated session IDs under the canonicalized home.
 
-Session databases intentionally contain user messages, assistant output, tool arguments/results, approvals, and other session history. They must not contain provider credentials, browser credentials, OAuth material, authorization headers, or planned [`CredentialStore`](adr/0014-wsl-file-credential-store.md) data. The released v0.1 slice has no provider credential store.
+Session databases intentionally contain user messages, assistant output, tool arguments/results, approvals, and other session history. They must not contain provider credentials, browser credentials, OAuth material, authorization headers, or [`CredentialStore`](adr/0014-wsl-file-credential-store.md) data. Milestone 11 stores file credentials outside `WI_HOME` and supports read-only environment references; neither backend places secrets in SQLite.
 
-The catalog contains summaries and location/index data, not provider secrets. Session event history is append-only. Corrupt or unsupported evidence is preserved in place rather than automatically deleted or overwritten. Planned complete-catalog-loss credential recovery exposes only bounded safe metadata and a backend-issued opaque one-time recovery reference to the authenticated local administration flow; it never exposes or accepts a credential path, generated filename, secret, or credential-derived fingerprint.
+The catalog contains summaries and location/index data, not provider secrets. Session event history is append-only. Corrupt or unsupported evidence is preserved in place rather than automatically deleted or overwritten. Complete-catalog-loss credential recovery exposes only bounded safe metadata and a backend-issued opaque one-time recovery reference to the authenticated local administration flow; it never exposes or accepts a credential path, generated filename, secret, or credential-derived fingerprint.
 
 ## Provider and tools
 
-Only the deterministic fake provider and safe built-in tools exist in this slice. There is:
+Milestone 11 handles OpenAI Platform API-key credentials only inside the local file/environment `CredentialStore` boundary; selected-provider execution remains a deterministic test-gated no-network fixture. There is:
 
-- no OpenAI API key handling;
+- no OpenAI API request, endpoint probe, or live adapter;
 - no ChatGPT/Codex OAuth;
 - no provider/account/billing fallback;
 - no `codex app-server` invocation;
@@ -66,7 +66,7 @@ Every tool call is validated and recorded in the durable ledger. A partial, fail
 
 ## Backup/export
 
-No production session-export API or UI exists. A future export must use a consistent SQLite snapshot and exclude API keys, OAuth tokens, browser credentials, and planned `CredentialStore` material. Current v0.1 manual backups should be performed while Wi is stopped and treated as sensitive because session content is included; planned v0.2 credentials live outside the `WI_HOME` backup boundary.
+No production session-export API or UI exists. A future export must use a consistent SQLite snapshot and exclude API keys, OAuth tokens, browser credentials, and `CredentialStore` material. Current v0.1 manual backups should be performed while Wi is stopped and treated as sensitive because session content is included; v0.2 credentials live outside the `WI_HOME` backup boundary.
 
 ## Reporting a local diagnostic
 

@@ -1,4 +1,4 @@
-# Wi v0.1 session event catalog
+# Wi v0.1 plus v0.2 Milestone 11 session event catalog
 
 Source of truth: `packages/protocol/src/events.ts`. Every canonical session event is committed to exactly one session database before publication.
 
@@ -28,6 +28,7 @@ Source of truth: `packages/protocol/src/events.ts`. Every canonical session even
 | Event | Data fields beyond `eventVersion` | Meaning |
 |---|---|---|
 | `session.created` | `title`, optional `projectId` | Canonical creation identity and initial title |
+| `session.provider_default.set` | complete nonsecret `default` selection | Future-run explicit provider connection/model default committed with its projection |
 | `user.message.appended` | `messageId`, `runId`, `text` | User message accepted for a run |
 | `assistant.message.completed` | `runId`, `messageId` | Assistant message is complete and no longer streaming |
 
@@ -35,7 +36,7 @@ Source of truth: `packages/protocol/src/events.ts`. Every canonical session even
 
 | Event | Data fields beyond `eventVersion` | Meaning |
 |---|---|---|
-| `run.created` | `runId` | Durable run created |
+| `run.created` | version 1: `runId`; version 2: `runId`, complete immutable `providerSelection` | Durable run created; selected M11 runs pin server-authored connection, credential generation, capabilities, model, prompt/tool identity, transport, and provider chain |
 | `run.started` | `runId` | Run entered provider/tool execution |
 | `run.waiting_for_user` | `runId`, `reason: approval`, `approvalId`; or `reason: input`, `inputId` | Run is durable and waiting without requiring a browser |
 | `run.cancel.requested` | `runId` | Durable cancellation accepted |

@@ -7,7 +7,18 @@ import {
 import type { AddressInfo, Socket } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAXIMUM_BOOTSTRAP_SESSIONS } from "@wi/protocol";
+import {
+  CommandIdSchema,
+  CredentialRecoveryCommandStatusSchema,
+  CredentialRecoveryExpectedSafeMetadataSchema,
+  CredentialRecoveryScanResultSchema,
+  MAXIMUM_BOOTSTRAP_SESSIONS,
+  ProviderConnectionIdSchema,
+  ProviderConnectionListSchema,
+  ProviderCapabilitiesSnapshotSchema,
+  RecoveryEpochIdSchema,
+  type CredentialRecoveryExpectedSafeMetadata,
+} from "@wi/protocol";
 import type { WiRuntime } from "../composition.js";
 import { nonThrowingLogger, type Logger } from "../logging/logger.js";
 import { LocalBrowserAuth, handleBootstrap } from "./bootstrap.js";
@@ -76,6 +87,48 @@ function writeJson(response: ServerResponse, statusCode: number, value: unknown)
     "content-type": "application/json; charset=utf-8",
   });
   response.end(body);
+}
+
+function uniqueBoundedHeader(
+  request: IncomingMessage,
+  name: string,
+  maximumBytes: number,
+): string | null {
+  let value: string | null = null;
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    if (request.rawHeaders[index]?.toLowerCase() !== name) continue;
+    const candidate = request.rawHeaders[index + 1];
+    if (value !== null || candidate === undefined || Buffer.byteLength(candidate) > maximumBytes) {
+      return null;
+    }
+    value = candidate;
+  }
+  return value;
+}
+
+function recoveryStatusExpectedMetadata(
+  request: IncomingMessage,
+): CredentialRecoveryExpectedSafeMetadata | null {
+  const operationKind = uniqueBoundedHeader(
+    request,
+    "x-wi-recovery-operation-kind",
+    64,
+  );
+  const encoded = uniqueBoundedHeader(
+    request,
+    "x-wi-recovery-expected-metadata",
+    8 * 1_024,
+  );
+  if (operationKind !== "credential_recovery" || encoded === null) return null;
+  try {
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.byteLength > 6 * 1_024 || bytes.toString("base64") !== encoded) return null;
+    return CredentialRecoveryExpectedSafeMetadataSchema.parse(
+      JSON.parse(bytes.toString("utf8")) as unknown,
+    );
+  } catch {
+    return null;
+  }
 }
 
 function securityHeaders(response: ServerResponse): void {
@@ -362,6 +415,81 @@ export class WiServer {
     }
   }
 
+  private async serveProviderRead(
+    request: IncomingMessage,
+    response: ServerResponse,
+    pathname: string,
+  ): Promise<void> {
+    try {
+      if (pathname === "/api/provider-connections") {
+        writeJson(
+          response,
+          200,
+          ProviderConnectionListSchema.parse(
+            await this.runtime.providerConnections.listSafeConnections(),
+          ),
+        );
+        return;
+      }
+      if (pathname === "/api/provider-connections/recovery-scan") {
+        writeJson(
+          response,
+          200,
+          CredentialRecoveryScanResultSchema.parse(
+            await this.runtime.providerConnections.startRecoveryScan(),
+          ),
+        );
+        return;
+      }
+      const recoveryStatusMatch = /^\/api\/provider-connections\/recovery-commands\/([^/]+)\/([^/]+)$/u.exec(pathname);
+      if (recoveryStatusMatch !== null) {
+        const commandId = CommandIdSchema.safeParse(recoveryStatusMatch[1]);
+        const recoveryEpochId = RecoveryEpochIdSchema.safeParse(recoveryStatusMatch[2]);
+        if (!commandId.success || !recoveryEpochId.success) {
+          this.rejectHttp(response, 400, "http.invalid_target", "The recovery command status target is invalid.", "invalid_recovery_status_target");
+          return;
+        }
+        const expectedSafeMetadata = recoveryStatusExpectedMetadata(request);
+        if (expectedSafeMetadata === null) {
+          this.rejectHttp(
+            response,
+            400,
+            "http.invalid_target",
+            "The recovery command status metadata is invalid.",
+            "invalid_recovery_status_metadata",
+          );
+          return;
+        }
+        writeJson(response, 200, CredentialRecoveryCommandStatusSchema.parse(
+          await this.runtime.providerConnections.recoveryCommandStatus(
+            commandId.data,
+            recoveryEpochId.data,
+            expectedSafeMetadata,
+          ),
+        ));
+        return;
+      }
+      const match = /^\/api\/provider-connections\/([^/]+)\/capabilities$/u.exec(pathname);
+      if (match !== null) {
+        const connectionId = ProviderConnectionIdSchema.safeParse(match[1]);
+        if (!connectionId.success) {
+          this.rejectHttp(response, 400, "http.invalid_target", "The provider connection ID is invalid.", "invalid_provider_connection_id");
+          return;
+        }
+        const capabilities = await this.runtime.storage.catalog.getProviderCapabilities(connectionId.data);
+        if (capabilities === null) {
+          this.rejectHttp(response, 404, "provider.capabilities_unavailable", "Provider capabilities are unavailable.", "capabilities_unavailable");
+          return;
+        }
+        writeJson(response, 200, ProviderCapabilitiesSnapshotSchema.parse(capabilities));
+        return;
+      }
+      this.rejectHttp(response, 404, "http.not_found", "Route not found.", "route_not_found");
+    } catch (error) {
+      this.internalHttpFailure(response, error, "provider_read");
+    }
+  }
+
   private async serveApplication(response: ServerResponse, pathname: string): Promise<void> {
     try {
       if ((await serveStaticAsset(response, pathname, this.webRoot)) === "served") return;
@@ -440,6 +568,14 @@ export class WiServer {
     }
     if (pathname === "/bootstrap") {
       void this.serveBootstrap(response);
+      return;
+    }
+    if (pathname.startsWith("/api/provider-connections")) {
+      if (!this.auth.authenticate(request.headers.cookie)) {
+        this.rejectHttp(response, 401, "http.unauthorized", "Browser authentication is required.", "unauthorized");
+        return;
+      }
+      void this.serveProviderRead(request, response, pathname);
       return;
     }
     if (pathname === "/ws") {

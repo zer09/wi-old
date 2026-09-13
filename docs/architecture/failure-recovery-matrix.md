@@ -1,8 +1,8 @@
-# Wi v0.1 failure and recovery matrix
+# Wi v0.1 plus v0.2 Milestone 11 failure and recovery matrix
 
 Operational recovery procedures are in [`docs/reference/migrations.md`](../reference/migrations.md) and [`docs/troubleshooting.md`](../troubleshooting.md). This matrix remains the canonical behavior summary.
 
-Status: canonical for Milestone 7
+Status: canonical for Milestone 7 and the Milestone 11 provider-credential additions
 
 ## Recovery ownership
 
@@ -29,6 +29,24 @@ Recovery is idempotent. Every recovery mutation uses event identity plus project
 | `after_session_create_before_catalog_ready` | 98 | Startup completes the known `creating` reservation from the session manifest. |
 | `after_catalog_session_repair` | 99 | The durable repair marker remains set. Restart rescans all generated session paths and idempotently completes reconstruction. |
 | `after_catalog_replacement_before_repair` | 100 | A newly created catalog schema and durable repair intent already committed; repeated restart rescans safely before any reconstructed row. Corrupt existing catalogs fail closed before this boundary. |
+| `after_provider_lifecycle_prepare` | 101 | Restart proves or replays the reserved exact file effect, observes it, then terminalizes once. |
+| `after_provider_file_effect` | 102 | Restart verifies complete binding evidence before recording `file_observed`; mismatches become unavailable/`failed_after_effect`. |
+| `after_provider_file_observed` | 103 | Restart terminalizes the already-observed effect without repeating it. |
+| `after_provider_lifecycle_terminal_before_ack` | 104 | Exact retry returns the durable terminal result with `duplicate: true`. |
+| `after_provider_stage_cleanup` | 105 | Startup removes the already-consumed stage and clears its durable cleanup cursor. |
+| `after_provider_stage_temp_flush` | 106 | Startup validates and removes the strict generated orphan staging temporary. |
+| `after_provider_credential_temp_flush` | 107 | Startup validates and removes the strict generated orphan credential temporary before recovery. |
+| `after_provider_stage_commit` | 108 | An unreturned complete stage remains unclaimed and is removed by bounded expiry cleanup. |
+| `before_provider_provisioning_ref_return` | 109 | Same durable unreturned-stage outcome as the preceding publication boundary. |
+| `after_recovery_admission` | 110 | Restart expires reference-free `validating` admission with `credential.recovery_ref_expired`. |
+| `after_recovery_prepare` | 111 | Restart verifies the claimed exact source; success restores it, while source change creates an unavailable recovery tombstone. |
+| `after_environment_run_acceptance_before_request` | 112 | Restart interrupts the accepted environment-backed run before issuing any provider request. |
+| `after_provider_stage_delete_before_flush` | 113 | The stage pathname is already absent; restart completes directory durability and clears the terminal operation's cleanup cursor. |
+| `after_provider_credential_rename_before_flush` | 114 | The complete temporary credential has been fsynced and renamed into the final target; post-rename mode/validation and credential-directory fsync have not run. Restart accepts only the exact old or reserved-new envelope: an exact new target is observed/terminalized once without republish or generation increment, while a missing target uses only the exact claimed stage. Create and replace process regressions assert one file, one generation reservation, stable retry, and no partial JSON. |
+| `after_provider_credential_unlink_before_flush` | 115 | The exact bound credential pathname has been unlinked; credential-directory fsync and terminal catalog projection have not run. Restart accepts exact absence or the exact old bound envelope, completes only the same logout/delete effect, and terminalizes one result without touching another connection. Logout and delete process regressions assert their distinct final projections, exact retry, owner release, and zero files. |
+| `after_provider_stage_rename_before_flush` | 116 | The complete staged envelope has been fsynced and renamed; staging-directory fsync, post-commit hook, and provisioning-reference return have not run. Restart observes either one complete unclaimed stage or no stage, performs bounded expiry cleanup only, creates no connection/claim, and leaks no reference or secret. The stage-publication process regression asserts the new exit code and the pre-restart namespace shape before cleanup. |
+
+Credential-root semantic probing has separate package-injected real-process crash hooks after source-file flush and after rename. The process suite kills the child with `SIGKILL`, restarts against the same roots, and proves bounded startup cleanup removes only strict descriptor-verified probe files, flushes the directory, preserves unrelated lookalikes, and rejects rather than reads or unlinks unsafe strict matches.
 
 The process suite also covers a force kill while waiting for approval, repeated restart while approval/input remains pending, approval resolution committed immediately before process death, two consecutive crashes using the same publication failpoint, concurrent sessions reaching each workflow boundary in the wrong order, graceful shutdown during provider streaming, replay, and catalog observation, retained noncooperative replay and catalog-observation gates, a blocked storage request timing out during shutdown, partial catalog repair, catalog deletion, and corrupt or identity-mismatched discovered databases. Process test files use an explicitly selected single-thread Vitest pool and therefore run serially under the full workspace gate, readiness-sensitive fixture deadlines begin only after an explicit marker, and CI runs the complete process project on Linux.
 
@@ -49,6 +67,7 @@ command transaction/ack:       WI_TEST_FAILPOINT_SESSION_ID + WI_TEST_FAILPOINT_
 catalog session repair:         WI_TEST_FAILPOINT_SESSION_ID
 publication/provider/tool/run:  WI_TEST_FAILPOINT_SESSION_ID + WI_TEST_FAILPOINT_COMMAND_ID + WI_TEST_FAILPOINT_RUN_ID
 session creation:               WI_TEST_FAILPOINT_COMMAND_ID
+provider credential/lifecycle:  WI_TEST_FAILPOINT_COMMAND_ID
 catalog replacement:            WI_TEST_FAILPOINT_CATALOG_GLOBAL=1
 ```
 
@@ -110,7 +129,7 @@ Shutdown proceeds in this order:
 
 1. mark the HTTP/WebSocket server closing and stop upgrades and new commands;
 2. begin bounded HTTP listener drain;
-3. close browser WebSockets and subscription/replay queues;
+3. close browser WebSockets and subscription/replay queues; recovery ingress is process-wide bounded at 64 pending frames and 512 KiB of raw/canonical command bytes, and only successfully reserved frames participate in the drain;
 4. stop actor admission and cancel/drain active provider and tool tasks under actor deadlines;
 5. shut down scheduler admission and drain held permits;
 6. stop new storage commits, drain active operations and bounded catalog observations;

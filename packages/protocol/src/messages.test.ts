@@ -50,6 +50,17 @@ describe("v1 client messages", () => {
       method: "input.respond",
       params: { inputId: "input_A", value: { answer: 42 } },
     },
+    {
+      v: 1,
+      kind: "command",
+      commandId,
+      method: "providerConnection.environment.revalidate",
+      params: {
+        connectionId: "pconn_A",
+        expectedLifecycleRevision: 2,
+        expectedGeneration: 1,
+      },
+    },
   ])("decodes a valid $kind message", (message) => {
     expect(ClientMessageSchema.safeParse(message).success).toBe(true);
   });
@@ -65,6 +76,18 @@ describe("v1 client messages", () => {
       sessionId,
       method: "message.submit",
       params: { text: "hello", unexpected: true },
+    },
+    {
+      v: 1,
+      kind: "command",
+      commandId,
+      method: "providerConnection.environment.revalidate",
+      params: {
+        connectionId: "pconn_A",
+        expectedLifecycleRevision: 2,
+        expectedGeneration: 1,
+        variableName: "MUST_NOT_BE_CLIENT_SUPPLIED",
+      },
     },
     { v: 1, kind: "heartbeat", clientTimeMs: Number.POSITIVE_INFINITY },
   ])("rejects invalid message %#", (message) => {

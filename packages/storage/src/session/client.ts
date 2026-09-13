@@ -19,6 +19,7 @@ import type {
   SessionEventPage,
   SessionEventPageInput,
   SessionManifest,
+  SessionProviderDefaultRecord,
   SessionRecoveryResult,
 } from "../types.js";
 import type { SessionWorkerPool } from "./worker-pool.js";
@@ -129,6 +130,10 @@ export class SessionClient {
 
   getRun(runId: string): Promise<RunRecord | null> {
     return this.runUse(() => this.#pool.getRun(this.sessionId, runId));
+  }
+
+  getProviderDefault(): Promise<SessionProviderDefaultRecord | null> {
+    return this.runUse(() => this.#pool.getProviderDefault(this.sessionId));
   }
 
   getRunProviderMatch(

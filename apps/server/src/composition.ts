@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { CredentialRootOptions } from "@wi/credentials";
 import {
   AgentRunLoop,
   CommittedEventHub,
@@ -7,7 +8,13 @@ import {
   SessionActorRegistry,
   type CreateRunProviderSnapshot,
 } from "@wi/harness-core";
-import { createId, type MessageSubmitCommand } from "@wi/protocol";
+import {
+  canonicalJsonHash,
+  createId,
+  type MessageSubmitCommand,
+  type ProviderCapabilitiesSnapshot,
+  type ProviderConnectionSafeView,
+} from "@wi/protocol";
 import {
   FakeProviderAdapter,
   type FakeProviderConfiguration,
@@ -23,11 +30,15 @@ import {
   ToolExecutor,
   type ToolRegistry,
 } from "@wi/tools";
+import { toJSONSchema } from "zod";
+
 import {
   JsonLogger,
   nonThrowingLogger,
   type Logger,
 } from "./logging/logger.js";
+import { ProviderConnectionService } from "./provider-connections/service.js";
+import type { RecoveryIngressBudgetOptions } from "./provider-connections/recovery-ingress.js";
 import type { TestFailpointController } from "./testing/failpoints.js";
 import { CommandRouter } from "./websocket/command-router.js";
 
@@ -91,6 +102,29 @@ export interface WiRuntimeOptions {
   readonly shutdownDeadlineMs?: number;
   readonly storage?: RuntimeStorageOptions;
   readonly testFailpoints?: TestFailpointController;
+  readonly credentialRoots?: Omit<CredentialRootOptions, "wiHome">;
+  readonly providerConnectionFixture?: {
+    readonly provider: FakeProviderAdapter;
+    readonly providerConfiguration?: FakeProviderConfiguration;
+    readonly capabilitiesForConnection: (
+      connection: ProviderConnectionSafeView,
+    ) => ProviderCapabilitiesSnapshot | null;
+    readonly beforeRecoveryScanPublication?: () => Promise<void>;
+    readonly beforeRecoveryStatusRead?: () => Promise<void>;
+    readonly afterRecoveryPrepare?: (commandId: string) => Promise<void>;
+    readonly afterRecoveryFileObserved?: (commandId: string) => Promise<void>;
+    readonly afterRecoveryStatusInitialLookup?: () => Promise<void>;
+    readonly beforePostCommitMaintenance?: (
+      kind: "capabilities" | "recovery_availability",
+    ) => void;
+    readonly afterLifecyclePrepare?: (
+      operationKind: "create" | "replace" | "logout" | "delete" | "enable",
+      commandId: string,
+      connectionId: string,
+    ) => Promise<void>;
+    /** Test-only lower process-wide recovery ingress limits. */
+    readonly recoveryIngressBudget?: RecoveryIngressBudgetOptions;
+  };
 }
 
 function parseStorageOptions(value: unknown): RuntimeStorageOptions | undefined {
@@ -114,6 +148,7 @@ export class WiRuntime {
   readonly actors: SessionActorRegistry;
   readonly provider: FakeProviderAdapter;
   readonly commandRouter: CommandRouter;
+  readonly providerConnections: ProviderConnectionService;
   readonly diagnosticId = (): string => id("diagnostic");
   readonly now: () => number;
   private readonly evictionIntervalMs: number;
@@ -125,7 +160,7 @@ export class WiRuntime {
 
   constructor(options: WiRuntimeOptions) {
     if (
-      options.testFailpoints !== undefined &&
+      (options.testFailpoints !== undefined || options.providerConnectionFixture !== undefined) &&
       (process.env.NODE_ENV !== "test" || process.env.WI_ALLOW_TEST_FAILPOINTS !== "1")
     ) {
       throw new Error(
@@ -157,21 +192,22 @@ export class WiRuntime {
     });
     const toolRegistry = options.toolRegistry ?? createBuiltinToolRegistry();
     const toolExecutor = options.toolExecutor ?? new ToolExecutor();
+    const selectionAuthority = canonicalJsonHash({
+      version: 1,
+      tools: toolRegistry.list().map((definition) => ({
+        name: definition.name,
+        description: definition.description,
+        inputSchema: JSON.parse(JSON.stringify(toJSONSchema(definition.inputSchema))) as unknown,
+        effectClass: definition.effectClass,
+        approval: definition.approval,
+      })),
+    }).then((toolSchemaHash) => ({
+      promptVersion: "wi-v1",
+      toolSchemaHash,
+      toolsAvailable: toolRegistry.list().length > 0,
+    }));
     const defaultProviderConfiguration = options.providerConfiguration ?? {
       scenario: "plain-text",
-    };
-    const createRunProviderSnapshot: CreateRunProviderSnapshot = (command) => {
-      const configuration =
-        options.selectProviderConfiguration?.(command) ?? defaultProviderConfiguration;
-      return {
-        providerId: this.provider.id,
-        providerConfig: {
-          scenario: configuration.scenario,
-          ...(configuration.roundTripTool === undefined
-            ? {}
-            : { roundTripTool: configuration.roundTripTool }),
-        },
-      };
     };
     const sessionWorkerOptions = storageOptions?.sessionWorkers;
     const catalogWorkerOptions = storageOptions?.catalogWorker;
@@ -245,6 +281,73 @@ export class WiRuntime {
       },
     });
 
+    const selectedFixtureProvider = options.providerConnectionFixture?.provider;
+    this.providerConnections = new ProviderConnectionService(
+      this.storage,
+      options.homeDirectory,
+      options.credentialRoots ?? {},
+      this.now,
+      process.env,
+      id("backendProcessEpoch"),
+      selectionAuthority,
+      {
+        ...(options.providerConnectionFixture === undefined
+          ? {}
+          : {
+              capabilitiesForConnection: options.providerConnectionFixture.capabilitiesForConnection,
+              ...(options.providerConnectionFixture.recoveryIngressBudget === undefined
+                ? {}
+                : { recoveryIngressBudget: options.providerConnectionFixture.recoveryIngressBudget }),
+              ...(options.providerConnectionFixture.beforeRecoveryScanPublication === undefined
+                ? {}
+                : {
+                    beforeRecoveryScanPublication:
+                      options.providerConnectionFixture.beforeRecoveryScanPublication,
+                  }),
+              ...(options.providerConnectionFixture.beforeRecoveryStatusRead === undefined
+                ? {}
+                : {
+                    beforeRecoveryStatusRead:
+                      options.providerConnectionFixture.beforeRecoveryStatusRead,
+                  }),
+              ...(options.providerConnectionFixture.afterRecoveryPrepare === undefined
+                ? {}
+                : { afterRecoveryPrepare: options.providerConnectionFixture.afterRecoveryPrepare }),
+              ...(options.providerConnectionFixture.afterRecoveryFileObserved === undefined
+                ? {}
+                : { afterRecoveryFileObserved: options.providerConnectionFixture.afterRecoveryFileObserved }),
+              ...(options.providerConnectionFixture.afterRecoveryStatusInitialLookup === undefined
+                ? {}
+                : {
+                    afterRecoveryStatusInitialLookup:
+                      options.providerConnectionFixture.afterRecoveryStatusInitialLookup,
+                  }),
+              ...(options.providerConnectionFixture.beforePostCommitMaintenance === undefined
+                ? {}
+                : {
+                    beforePostCommitMaintenance:
+                      options.providerConnectionFixture.beforePostCommitMaintenance,
+                  }),
+              ...(options.providerConnectionFixture.afterLifecyclePrepare === undefined
+                ? {}
+                : {
+                    afterLifecyclePrepare:
+                      options.providerConnectionFixture.afterLifecyclePrepare,
+                  }),
+            }),
+        adapterAvailable: (connection) =>
+          selectedFixtureProvider !== undefined &&
+          selectedFixtureProvider.id === connection.providerId,
+      },
+      options.testFailpoints,
+      (kind, error) => {
+        this.logger.error("provider_connection_maintenance_failed", error, {
+          diagnosticId: this.diagnosticId(),
+          maintenanceKind: kind,
+        });
+      },
+    );
+
     this.actors = new SessionActorRegistry({
       now: this.now,
       idleTimeoutMs: limits.actorIdleTimeoutMs,
@@ -253,6 +356,37 @@ export class WiRuntime {
         const runLoop = new AgentRunLoop({
           storage: session,
           provider: this.provider,
+          providerForRun: (run) => {
+            if (run.providerId === selectedFixtureProvider?.id) {
+              const providerConnections = this.providerConnections;
+              return {
+                id: selectedFixtureProvider.id,
+                async *stream(request, context, signal) {
+                  const lease = await providerConnections.acquireCredentialRequestLease(
+                    request.runId,
+                    run.providerSelection ?? null,
+                  );
+                  try {
+                    const stream = lease.withCredential((credential) => {
+                      if (credential === undefined) {
+                        throw new Error("A selected provider request requires an issued credential.");
+                      }
+                      return selectedFixtureProvider.stream(
+                        request,
+                        { ...context, credential },
+                        signal,
+                      );
+                    });
+                    yield* stream;
+                  } finally {
+                    lease.release();
+                  }
+                },
+              };
+            }
+            if (run.providerId === this.provider.id) return this.provider;
+            return null;
+          },
           registry: toolRegistry,
           executor: toolExecutor,
           ids: {
@@ -268,6 +402,41 @@ export class WiRuntime {
             this.logger.error(`${operation}_operation_failed`, error, fields);
           },
         });
+        const createRunProviderSnapshot: CreateRunProviderSnapshot = async (command, runId) => {
+          const selectedDefault = await session.getProviderDefault();
+          if (selectedDefault !== null) {
+            const providerSelection = await this.providerConnections.snapshotForRun(
+              selectedDefault.default,
+              runId,
+            );
+            return {
+              providerId: providerSelection.providerId,
+              providerConfig: options.providerConnectionFixture?.providerConfiguration === undefined
+                ? { scenario: "plain-text" }
+                : {
+                    scenario: options.providerConnectionFixture.providerConfiguration.scenario,
+                    ...(options.providerConnectionFixture.providerConfiguration.roundTripTool === undefined
+                      ? {}
+                      : {
+                          roundTripTool:
+                            options.providerConnectionFixture.providerConfiguration.roundTripTool,
+                        }),
+                  },
+              providerSelection,
+            };
+          }
+          const configuration =
+            options.selectProviderConfiguration?.(command) ?? defaultProviderConfiguration;
+          return {
+            providerId: this.provider.id,
+            providerConfig: {
+              scenario: configuration.scenario,
+              ...(configuration.roundTripTool === undefined
+                ? {}
+                : { roundTripTool: configuration.roundTripTool }),
+            },
+          };
+        };
         return SessionActor.create({
           storage: session,
           eventHub: this.eventHub,
@@ -280,11 +449,23 @@ export class WiRuntime {
             diagnosticId: this.diagnosticId,
           },
           now: this.now,
-          runTask: runLoop.task,
+          runTask: async (context) => {
+            try {
+              return await runLoop.task(context);
+            } finally {
+              this.providerConnections.discardRunLease(context.runId);
+            }
+          },
           createRunProviderSnapshot,
+          onRunProviderSnapshotAccepted: (runId) =>
+            this.providerConnections.completeRunAcceptance(runId),
+          onRunProviderSnapshotRejected: (runId) =>
+            this.providerConnections.discardRunLease(runId),
           runTaskOwnsSchedulerPermits: true,
           resumeRestoredRuns: true,
           currentToolEffectClass: runLoop.currentToolEffectClass,
+          shouldInterruptRestoredRun: (run) =>
+            this.providerConnections.shouldInterruptRestoredRun(run),
           cancelRunTask: runLoop.cancel,
           forceStopRunTask: (context) => {
             const diagnosticId = this.diagnosticId();
@@ -344,6 +525,7 @@ export class WiRuntime {
       this.eventHub,
       this.logger,
       this.diagnosticId,
+      this.providerConnections,
     );
   }
 
@@ -356,6 +538,10 @@ export class WiRuntime {
   private async finishReady(): Promise<void> {
     try {
       await this.storage.ready();
+      if (this.closing) return;
+      await this.providerConnections.initialize();
+      if (this.closing) return;
+      await this.providerConnections.recoverPreparedOperations();
       if (this.closing) return;
       // Recovery ownership belongs to the backend. Read and adopt one bounded
       // page at a time so startup can stop promptly without retaining the catalog.
@@ -419,7 +605,7 @@ export class WiRuntime {
     const startedAt = Date.now();
     const errors: unknown[] = [];
     const diagnostics: Array<{ component: string; phase: string; elapsedMs: number; remainingMs: number; classification: string; error: string }> = [];
-    const run = async (phase: string, operation: () => Promise<void>): Promise<void> => {
+    const run = async (phase: string, operation: () => Promise<void>): Promise<boolean> => {
       const remaining = deadlineAtMs - Date.now();
       if (remaining <= 0) {
         const error = new Error(`Shutdown deadline elapsed before ${phase}`);
@@ -434,7 +620,7 @@ export class WiRuntime {
             errors.push(cleanupError);
           }
         }
-        return;
+        return false;
       }
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -445,6 +631,7 @@ export class WiRuntime {
             timer.unref();
           }),
         ]);
+        return true;
       } catch (error) {
         errors.push(error);
         diagnostics.push({
@@ -455,13 +642,33 @@ export class WiRuntime {
           classification: Date.now() >= deadlineAtMs ? "timeout" : "failure",
           error: error instanceof Error ? error.message : String(error),
         });
+        return false;
       } finally {
         if (timer !== undefined) clearTimeout(timer);
       }
     };
     await run("actors", () => this.actors.close());
+    const providerConnectionsDrained = await run(
+      "providerConnections",
+      () => this.providerConnections.close(deadlineAtMs),
+    );
     await run("scheduler", () => this.scheduler.shutdown());
-    await run("storage", () => this.storage.close(deadlineAtMs));
+    if (providerConnectionsDrained) {
+      await run("storage", () => this.storage.close(deadlineAtMs));
+    } else {
+      const error = new Error(
+        "Storage remained open because provider connection work did not drain safely.",
+      );
+      errors.push(error);
+      diagnostics.push({
+        component: "runtime",
+        phase: "storage",
+        elapsedMs: Date.now() - startedAt,
+        remainingMs: Math.max(0, deadlineAtMs - Date.now()),
+        classification: "dependency_not_drained",
+        error: error.message,
+      });
+    }
     if (diagnostics.length > 0) {
       this.logger.error("server_shutdown_diagnostic", new AggregateError(errors), {
         diagnosticId: this.diagnosticId(),

@@ -68,6 +68,8 @@ interface RunRow {
   readonly state: RunState;
   readonly providerId: string;
   readonly providerConfigJson: string;
+  readonly providerSnapshotJson: string | null;
+  readonly providerChainId: string | null;
   readonly createdAtMs: number;
   readonly startedAtMs: number | null;
   readonly completedAtMs: number | null;
@@ -81,9 +83,15 @@ export function applyProjection(database: Database.Database, mutation: Projectio
   switch (mutation.kind) {
     case "run.put": {
       const providerConfigJson = canonicalJson(mutation.providerConfig);
+      const providerSelectionJson = mutation.providerSelection == null
+        ? null
+        : canonicalJson(mutation.providerSelection);
+      const providerChainId = mutation.providerSelection?.providerChainId ?? null;
       const existing = database
         .prepare(
           `SELECT state, provider_id AS providerId, provider_config_json AS providerConfigJson,
+                  provider_snapshot_json AS providerSnapshotJson,
+                  provider_chain_id AS providerChainId,
                   created_at_ms AS createdAtMs, started_at_ms AS startedAtMs,
                   completed_at_ms AS completedAtMs, cancelled_at_ms AS cancelledAtMs,
                   failure_category AS failureCategory, failure_message AS failureMessage,
@@ -95,6 +103,8 @@ export function applyProjection(database: Database.Database, mutation: Projectio
         if (
           existing.providerId !== mutation.providerId ||
           existing.providerConfigJson !== providerConfigJson ||
+          existing.providerSnapshotJson !== providerSelectionJson ||
+          existing.providerChainId !== providerChainId ||
           existing.createdAtMs !== mutation.createdAtMs
         ) {
           identityConflict("Run", mutation.runId);
@@ -118,16 +128,16 @@ export function applyProjection(database: Database.Database, mutation: Projectio
       database
         .prepare(
           `INSERT INTO runs (
-             run_id, state, provider_id, provider_config_json, created_at_ms, started_at_ms,
-             completed_at_ms, cancelled_at_ms, failure_category, failure_message,
-             active_provider_step_id
+             run_id, state, provider_id, provider_config_json, provider_snapshot_json,
+             provider_chain_id, created_at_ms, started_at_ms, completed_at_ms,
+             cancelled_at_ms, failure_category, failure_message, active_provider_step_id
            ) VALUES (
-             @runId, @state, @providerId, @providerConfigJson, @createdAtMs, @startedAtMs,
-             @completedAtMs, @cancelledAtMs, @failureCategory, @failureMessage,
-             @activeProviderStepId
+             @runId, @state, @providerId, @providerConfigJson, @providerSelectionJson,
+             @providerChainId, @createdAtMs, @startedAtMs, @completedAtMs,
+             @cancelledAtMs, @failureCategory, @failureMessage, @activeProviderStepId
            )`,
         )
-        .run({ ...mutation, providerConfigJson });
+        .run({ ...mutation, providerConfigJson, providerSelectionJson, providerChainId });
       return;
     }
     case "run.state": {
@@ -577,6 +587,40 @@ export function applyProjection(database: Database.Database, mutation: Projectio
       }
       return;
     }
+    case "session.providerDefault.put": {
+      const event = database
+        .prepare("SELECT sequence FROM events WHERE event_id = ?")
+        .get(mutation.eventId) as { sequence: number } | undefined;
+      if (event === undefined) {
+        throw new StorageError("session.invalid_transition", "Provider default event is missing");
+      }
+      const defaultJson = canonicalJson(mutation.default);
+      const existing = database
+        .prepare(
+          "SELECT default_json AS defaultJson, updated_sequence AS updatedSequence, event_id AS eventId FROM session_provider_default WHERE singleton = 1",
+        )
+        .get() as { defaultJson: string; updatedSequence: number; eventId: string } | undefined;
+      if (existing !== undefined && existing.updatedSequence >= event.sequence) {
+        if (
+          existing.updatedSequence !== event.sequence ||
+          existing.eventId !== mutation.eventId ||
+          existing.defaultJson !== defaultJson
+        ) {
+          throw new StorageError("session.invalid_transition", "Provider default projection regressed");
+        }
+        return;
+      }
+      database.prepare(
+        `INSERT INTO session_provider_default (
+           singleton, default_json, updated_sequence, event_id
+         ) VALUES (1, ?, ?, ?)
+         ON CONFLICT(singleton) DO UPDATE SET
+           default_json = excluded.default_json,
+           updated_sequence = excluded.updated_sequence,
+           event_id = excluded.event_id`,
+      ).run(defaultJson, event.sequence, mutation.eventId);
+      return;
+    }
     case "run.pendingInteractions.cancel": {
       database
         .prepare(
@@ -628,6 +672,8 @@ function projectionTarget(mutation: ProjectionMutation): string {
       return `input:${mutation.inputId}`;
     case "run.pendingInteractions.cancel":
       return `run.pendingInteractions.cancel:${mutation.runId}`;
+    case "session.providerDefault.put":
+      return "session.providerDefault";
   }
 }
 
@@ -645,6 +691,8 @@ function projectionApplied(database: Database.Database, mutation: ProjectionMuta
       const row = database
         .prepare(
           `SELECT state, provider_id AS providerId, provider_config_json AS providerConfigJson,
+                  provider_snapshot_json AS providerSelectionJson,
+                  provider_chain_id AS providerChainId,
                   created_at_ms AS createdAtMs, started_at_ms AS startedAtMs,
                   completed_at_ms AS completedAtMs, cancelled_at_ms AS cancelledAtMs,
                   failure_category AS failureCategory, failure_message AS failureMessage,
@@ -656,6 +704,10 @@ function projectionApplied(database: Database.Database, mutation: ProjectionMuta
         state: mutation.state,
         providerId: mutation.providerId,
         providerConfigJson: canonicalJson(mutation.providerConfig),
+        providerSelectionJson: mutation.providerSelection == null
+          ? null
+          : canonicalJson(mutation.providerSelection),
+        providerChainId: mutation.providerSelection?.providerChainId ?? null,
         createdAtMs: mutation.createdAtMs,
         startedAtMs: mutation.startedAtMs,
         completedAtMs: mutation.completedAtMs,
@@ -849,6 +901,17 @@ function projectionApplied(database: Database.Database, mutation: ProjectionMuta
         state: "resolved",
         resolvedAtMs: mutation.resolvedAtMs,
         valueJson: canonicalJson(mutation.value),
+      });
+    }
+    case "session.providerDefault.put": {
+      const row = database
+        .prepare(
+          "SELECT default_json AS defaultJson, event_id AS eventId FROM session_provider_default WHERE singleton = 1",
+        )
+        .get() as Record<string, unknown> | undefined;
+      return rowMatches(row, {
+        defaultJson: canonicalJson(mutation.default),
+        eventId: mutation.eventId,
       });
     }
     case "run.pendingInteractions.cancel": {

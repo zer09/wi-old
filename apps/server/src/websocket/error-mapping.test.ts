@@ -63,6 +63,34 @@ describe("mapCommandError", () => {
     });
   });
 
+  it("preserves distinct safe credential recovery conflict results", () => {
+    const cases = [
+      [
+        "credential.recovery_connection_conflict",
+        "The original provider connection is already occupied.",
+      ],
+      [
+        "credential.recovery_identity_conflict",
+        "The provider identity is already claimed by another connection.",
+      ],
+      [
+        "credential.recovery_already_claimed",
+        "The credential recovery evidence was already claimed.",
+      ],
+    ] as const;
+    for (const [code, message] of cases) {
+      expect(mapCommandError(
+        new StorageError(code, "untrusted recovery detail"),
+        () => "err_recoveryConflict",
+      )).toEqual({
+        code,
+        message,
+        recoverable: false,
+        diagnosticId: "err_recoveryConflict",
+      });
+    }
+  });
+
   it("rejects invalid embedded metadata and uses safe fallbacks", () => {
     const error = new CommandRoutingError(
       "storage.corrupt",

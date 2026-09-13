@@ -6,6 +6,11 @@ import { dirname, join } from "node:path";
 import { SessionRegistryUnavailableError } from "../../packages/harness-core/dist/session-registry.js";
 import type { ProviderContext, ProviderEvent, ProviderRequest } from "@wi/provider-contract";
 import {
+  FileCredentialStore,
+  StoredCredential,
+  initializeCredentialRoots,
+} from "@wi/credentials";
+import {
   BootstrapResponseSchema,
   MAXIMUM_BOOTSTRAP_SESSIONS,
   hashCommandContent,
@@ -26,6 +31,7 @@ import {
   sessionDatabaseRelativePath,
   SessionStoreManager,
   StorageError,
+  stableSessionWorkerIndex,
   type CatalogObservationFailure,
   type SessionClient,
   type SessionWorkerBarrier,
@@ -79,6 +85,8 @@ interface Fixture {
 const PROVIDER_SECRET = "AUDIT_PROVIDER_BEARER_SECRET";
 const TOOL_SECRET = "AUDIT_TOOL_BEARER_SECRET";
 const HTTP_SECRET = "AUDIT_HTTP_BEARER_SECRET";
+const previousNodeEnv = process.env.NODE_ENV;
+const previousFailpointGate = process.env.WI_ALLOW_TEST_FAILPOINTS;
 
 function sessionWorkers(storage: SessionStoreManager) {
   return sessionWorkerPoolForTest(storage);
@@ -188,6 +196,10 @@ afterEach(async () => {
   const paths = [...homes];
   homes.clear();
   await Promise.all(paths.map((path) => rm(path, { recursive: true, force: true })));
+  if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = previousNodeEnv;
+  if (previousFailpointGate === undefined) delete process.env.WI_ALLOW_TEST_FAILPOINTS;
+  else process.env.WI_ALLOW_TEST_FAILPOINTS = previousFailpointGate;
 });
 
 class TestSocket {
@@ -3189,6 +3201,311 @@ describe("Milestone 5 loopback server and WebSocket gateway", () => {
     await retry.close();
   });
 
+  it("registers queued recovery ingress before an earlier command drains", async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), "wi-recovery-ingress-"));
+    const stateHome = `${homeDirectory}-state`;
+    homes.add(stateHome);
+    const roots = await initializeCredentialRoots({ wiHome: homeDirectory, xdgStateHome: stateHome });
+    await new FileCredentialStore(roots.credentialRoot).put(
+      "credref_queuedRecoveryIngress",
+      new StoredCredential({
+        version: 1,
+        envelopeId: "envl_queuedRecoveryIngress",
+        connectionId: "pconn_queuedRecoveryIngress",
+        providerId: "openai_platform",
+        authMode: "api_key",
+        generation: 1,
+        updatedAtMs: 1,
+        identity: { status: "unverified" },
+        credential: { type: "api_key", apiKey: "queued-recovery-key" },
+      }),
+    );
+    let entered!: () => void;
+    const firstCommandEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fixture = await startFixture({
+      homeDirectory,
+      runtime: {
+        credentialRoots: {
+          credentialRoot: roots.credentialRoot,
+          stagingRoot: roots.stagingRoot,
+        },
+      },
+      gateway: {
+        commandHooks: {
+          beforeRoute: async (command) => {
+            if (command.commandId !== "cmd_blockRecoveryIngress") return;
+            entered();
+            await gate;
+          },
+        },
+      },
+    });
+    const { cookie } = await bootstrap(fixture.server);
+    const socket = await connect(fixture.server, cookie);
+    await hello(socket, "recoveryIngressQueue");
+    socket.send({
+      v: 1,
+      kind: "command",
+      commandId: "cmd_blockRecoveryIngress",
+      method: "providerConnection.environment.create",
+      params: {
+        providerId: "openai_platform",
+        authMode: "api_key",
+        displayName: "Blocking command",
+        variableName: "WI_RECOVERY_INGRESS_BLOCK",
+      },
+    });
+    await firstCommandEntered;
+    const scan = await fixture.runtime.providerConnections.startRecoveryScan();
+    const candidate = scan.candidates[0]!;
+    const recoveryExpectedSafeMetadata = {
+      expected: {
+        providerId: candidate.providerId,
+        authMode: candidate.authMode,
+        originalConnectionId: candidate.originalConnectionId,
+        generation: candidate.generation,
+        identity: candidate.identity,
+        updatedAtMs: candidate.updatedAtMs,
+      },
+      displayName: "Queued recovery",
+    };
+    socket.send({
+      v: 1,
+      kind: "command",
+      commandId: "cmd_queuedRecoveryIngress",
+      method: "providerConnection.recover",
+      params: {
+        recoveryRef: candidate.recoveryRef,
+        recoveryEpochId: scan.recoveryEpochId,
+        expected: recoveryExpectedSafeMetadata.expected,
+        displayName: recoveryExpectedSafeMetadata.displayName,
+      },
+    });
+
+    await eventually(async () => {
+      await expect(fixture.runtime.providerConnections.recoveryCommandStatus(
+        "cmd_queuedRecoveryIngress",
+        scan.recoveryEpochId,
+        recoveryExpectedSafeMetadata,
+      )).resolves.toMatchObject({ status: "admitting" });
+    });
+    const recoveryStatusUrl = `${fixture.server.origin}/api/provider-connections/recovery-commands/cmd_queuedRecoveryIngress/${scan.recoveryEpochId}`;
+    await expect(fetch(recoveryStatusUrl, { headers: { cookie } })).resolves.toMatchObject({
+      status: 400,
+    });
+    const recoveryHeaders = {
+      cookie,
+      "x-wi-recovery-operation-kind": "credential_recovery",
+      "x-wi-recovery-expected-metadata": Buffer.from(
+        JSON.stringify(recoveryExpectedSafeMetadata),
+      ).toString("base64"),
+    };
+    await expect(fetch(recoveryStatusUrl, { headers: recoveryHeaders }).then(
+      async (response) => response.json(),
+    )).resolves.toMatchObject({ status: "admitting" });
+    await expect(fetch(recoveryStatusUrl, {
+      headers: {
+        ...recoveryHeaders,
+        "x-wi-recovery-expected-metadata": Buffer.from(JSON.stringify({
+          ...recoveryExpectedSafeMetadata,
+          displayName: "Wrong local metadata",
+        })).toString("base64"),
+      },
+    }).then(async (response) => response.json())).resolves.toMatchObject({
+      status: "conflict",
+      failureCode: "protocol.command_id_conflict",
+    });
+    release();
+    await socket.take(
+      (message): message is CommandAcceptedFrame =>
+        message.kind === "command.accepted" &&
+        message.commandId === "cmd_blockRecoveryIngress",
+    );
+    await socket.take(
+      (message): message is CommandAcceptedFrame =>
+        message.kind === "command.accepted" &&
+        message.commandId === "cmd_queuedRecoveryIngress",
+    );
+    await expect(fixture.runtime.providerConnections.recoveryCommandStatus(
+      "cmd_queuedRecoveryIngress",
+      scan.recoveryEpochId,
+      recoveryExpectedSafeMetadata,
+    )).resolves.toMatchObject({ status: "succeeded" });
+    await socket.close();
+  });
+
+  it("enforces one aggregate recovery-ingress budget across authenticated WebSockets and direct routes", async () => {
+    process.env.NODE_ENV = "test";
+    process.env.WI_ALLOW_TEST_FAILPOINTS = "1";
+    const homeDirectory = await mkdtemp(join(tmpdir(), "wi-recovery-ingress-aggregate-"));
+    const stateHome = `${homeDirectory}-state`;
+    homes.add(stateHome);
+    const roots = await initializeCredentialRoots({ wiHome: homeDirectory, xdgStateHome: stateHome });
+    const store = new FileCredentialStore(roots.credentialRoot);
+    for (const [ref, connectionId, envelopeId] of [
+      ["credref_aggregateA", "pconn_aggregateA", "envl_aggregateA"],
+      ["credref_aggregateB", "pconn_aggregateB", "envl_aggregateB"],
+    ] as const) {
+      await store.put(ref, new StoredCredential({
+        version: 1,
+        envelopeId,
+        connectionId,
+        providerId: "openai_platform",
+        authMode: "api_key",
+        generation: 1,
+        updatedAtMs: 1,
+        identity: { status: "unverified" },
+        credential: { type: "api_key", apiKey: `${ref}-secret` },
+      }));
+    }
+    let preparedCount = 0;
+    let markPrepared!: () => void;
+    const prepared = new Promise<void>((resolve) => { markPrepared = resolve; });
+    let releasePrepared!: () => void;
+    const prepareGate = new Promise<void>((resolve) => { releasePrepared = resolve; });
+    const fixture = await startFixture({
+      homeDirectory,
+      runtime: {
+        credentialRoots: {
+          credentialRoot: roots.credentialRoot,
+          stagingRoot: roots.stagingRoot,
+        },
+        providerConnectionFixture: {
+          provider: new FakeProviderAdapter({ id: "openai_platform" }),
+          capabilitiesForConnection: () => null,
+          recoveryIngressBudget: { maximumFrames: 2, maximumBytes: 512 * 1_024 },
+          afterRecoveryPrepare: async () => {
+            preparedCount += 1;
+            if (preparedCount === 2) markPrepared();
+            await prepareGate;
+          },
+        },
+      },
+    });
+    const { cookie } = await bootstrap(fixture.server);
+    const first = await connect(fixture.server, cookie);
+    const second = await connect(fixture.server, cookie);
+    await hello(first, "aggregateIngressFirst");
+    await hello(second, "aggregateIngressSecond");
+    const scan = await fixture.runtime.providerConnections.startRecoveryScan();
+    expect(scan.candidates).toHaveLength(2);
+    const duplicateCandidate = scan.candidates[0]!;
+    const duplicateExpected = {
+      expected: {
+        providerId: duplicateCandidate.providerId,
+        authMode: duplicateCandidate.authMode,
+        originalConnectionId: duplicateCandidate.originalConnectionId,
+        generation: duplicateCandidate.generation,
+        identity: duplicateCandidate.identity,
+        updatedAtMs: duplicateCandidate.updatedAtMs,
+      },
+      displayName: "Duplicate budget probe",
+    };
+    const duplicateFirst = fixture.runtime.providerConnections.registerRecoveryIngress(
+      "cmd_duplicateBudget",
+      scan.recoveryEpochId,
+      duplicateExpected,
+      10,
+    );
+    const duplicateSecond = fixture.runtime.providerConnections.registerRecoveryIngress(
+      "cmd_duplicateBudget",
+      scan.recoveryEpochId,
+      duplicateExpected,
+      20,
+    );
+    expect(fixture.runtime.providerConnections.recoveryIngressSnapshot).toMatchObject({
+      pendingFrames: 2,
+      pendingBytes: 30,
+    });
+    duplicateFirst.release();
+    duplicateFirst.release();
+    duplicateSecond.release();
+    expect(fixture.runtime.providerConnections.recoveryIngressSnapshot).toMatchObject({
+      pendingFrames: 0,
+      pendingBytes: 0,
+    });
+    const commandFor = (
+      commandId: string,
+      candidate: typeof scan.candidates[number],
+    ) => ({
+      v: 1 as const,
+      kind: "command" as const,
+      commandId,
+      method: "providerConnection.recover" as const,
+      params: {
+        recoveryRef: candidate.recoveryRef,
+        recoveryEpochId: scan.recoveryEpochId,
+        expected: {
+          providerId: candidate.providerId,
+          authMode: candidate.authMode,
+          originalConnectionId: candidate.originalConnectionId,
+          generation: candidate.generation,
+          identity: candidate.identity,
+          updatedAtMs: candidate.updatedAtMs,
+        },
+        displayName: `Aggregate ${candidate.originalConnectionId}`,
+      },
+    });
+    const firstCommand = commandFor("cmd_aggregateRecoveryA", scan.candidates[0]!);
+    const secondCommand = commandFor("cmd_aggregateRecoveryB", scan.candidates[1]!);
+    first.send(firstCommand);
+    second.send(secondCommand);
+    await prepared;
+    expect(fixture.runtime.providerConnections.recoveryIngressSnapshot).toMatchObject({
+      pendingFrames: 2,
+      pendingBytes: expect.any(Number),
+    });
+
+    const rejectedCommand = commandFor("cmd_aggregateRecoveryRejected", scan.candidates[0]!);
+    first.send(rejectedCommand);
+    await expect(first.take(
+      (message): message is CommandRejectedFrame =>
+        message.kind === "command.rejected" &&
+        message.commandId === rejectedCommand.commandId,
+    )).resolves.toMatchObject({
+      code: "provider.rate_limited",
+      recoverable: true,
+    });
+    await expect(fixture.runtime.storage.catalog.getProviderLifecycleOperation(
+      rejectedCommand.commandId,
+    )).resolves.toBeNull();
+
+    const directRejected = commandFor("cmd_aggregateDirectRejected", scan.candidates[0]!);
+    await expect(fixture.runtime.providerConnections.route(directRejected)).rejects.toMatchObject({
+      code: "provider.rate_limited",
+    });
+    await expect(fixture.runtime.storage.catalog.getProviderLifecycleOperation(
+      directRejected.commandId,
+    )).resolves.toBeNull();
+
+    releasePrepared();
+    await expect(first.take(
+      (message): message is CommandAcceptedFrame =>
+        message.kind === "command.accepted" && message.commandId === firstCommand.commandId,
+    )).resolves.toMatchObject({ duplicate: false });
+    await expect(second.take(
+      (message): message is CommandAcceptedFrame =>
+        message.kind === "command.accepted" && message.commandId === secondCommand.commandId,
+    )).resolves.toMatchObject({ duplicate: false });
+    expect(fixture.runtime.providerConnections.recoveryIngressSnapshot).toMatchObject({
+      pendingFrames: 0,
+      pendingBytes: 0,
+    });
+    await first.close();
+    await second.close();
+    await fixture.server.close();
+    expect(fixture.runtime.providerConnections.recoveryIngressSnapshot).toMatchObject({
+      pendingFrames: 0,
+      pendingBytes: 0,
+    });
+  });
+
   it.each([
     ["before routing", "beforeRoute", false],
     ["after durable acceptance before acknowledgement", "afterRouteBeforeSend", false],
@@ -4422,9 +4739,27 @@ describe("Milestone 5 loopback server and WebSocket gateway", () => {
   });
 
   it("keeps another session and HTTP responsive while one session worker is busy", async () => {
+    const candidateIds = Array.from({ length: 16 }, (_value, index) =>
+      `ses_busyWorkerDeterministic${index}`
+    );
+    const sessionIds = [0, 1].map((workerIndex) => {
+      const sessionId = candidateIds.find((candidate) =>
+        stableSessionWorkerIndex(candidate, 2) === workerIndex
+      );
+      if (sessionId === undefined) throw new Error("Deterministic worker session ID is missing");
+      return sessionId;
+    });
+    let sessionIdIndex = 0;
+    let storageEventIndex = 0;
     const fixture = await startFixture({
       runtime: {
-        storage: { sessionWorkers: { allowTestOperations: true, size: 2 } },
+        storage: {
+          ids: {
+            sessionId: () => sessionIds[sessionIdIndex++]!,
+            eventId: () => `evt_busyWorkerStorage${++storageEventIndex}`,
+          },
+          sessionWorkers: { allowTestOperations: true, size: 2 },
+        },
       },
     });
     const { cookie } = await bootstrap(fixture.server);
@@ -4432,18 +4767,12 @@ describe("Milestone 5 loopback server and WebSocket gateway", () => {
     await hello(client, "busyWorker");
     const first = await createSession(client, "busyWorkerFirst");
     if (first.sessionId === undefined) throw new Error("Session creation failed");
-    let secondSessionId: string | null = null;
-    for (let attempt = 0; attempt < 8 && secondSessionId === null; attempt += 1) {
-      const candidate = await createSession(client, `busyWorkerOther${attempt}`);
-      if (
-        candidate.sessionId !== undefined &&
-        sessionWorkers(fixture.runtime.storage).workerIndexFor(candidate.sessionId) !==
-          sessionWorkers(fixture.runtime.storage).workerIndexFor(first.sessionId)
-      ) {
-        secondSessionId = candidate.sessionId;
-      }
-    }
-    if (secondSessionId === null) throw new Error("Could not create sessions on distinct workers");
+    const second = await createSession(client, "busyWorkerOther");
+    const secondSessionId = second.sessionId;
+    if (secondSessionId === undefined) throw new Error("Second session creation failed");
+    expect(sessionWorkers(fixture.runtime.storage).workerIndexFor(secondSessionId)).not.toBe(
+      sessionWorkers(fixture.runtime.storage).workerIndexFor(first.sessionId),
+    );
 
     const barrier = await sessionWorkers(fixture.runtime.storage).blockWorkerForTest(first.sessionId);
     try {

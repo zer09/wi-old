@@ -21,6 +21,7 @@ import { ApprovalPanel } from "./components/ApprovalPanel.js";
 import { Composer } from "./components/Composer.js";
 import { ConnectionStatus } from "./components/ConnectionStatus.js";
 import { PendingInputPanel } from "./components/PendingInputPanel.js";
+import { ProviderConnectionsPanel } from "./components/ProviderConnectionsPanel.js";
 import { RunStatus } from "./components/RunStatus.js";
 import { SessionList } from "./components/SessionList.js";
 import { Timeline } from "./components/Timeline.js";
@@ -699,6 +700,14 @@ export function App() {
           </div>
           <ConnectionStatus connection={connection} />
         </header>
+
+        <ProviderConnectionsPanel
+          selectedSessionId={selectedSessionId}
+          selectedDefault={selectedSession?.providerDefault ?? null}
+          disabled={terminalConnection}
+          onCommand={(command) => send(command)}
+          onNotice={(message, error = false) => addNotice(message, error ? "error" : "info")}
+        />
 
         {selectedSessionId !== null && selectedSummary === undefined ? (
           <p className="session-target-status" role="status">

@@ -291,6 +291,7 @@ async function actorFixture(
   name = "actor",
   options: {
     readonly createRunProviderSnapshot?: CreateRunProviderSnapshot;
+    readonly onRunProviderSnapshotRejected?: (runId: string) => void | Promise<void>;
     readonly onFault?: (error: unknown) => void;
     readonly onRunFailureDiagnostic?: (diagnostic: SessionRunFailureDiagnostic) => void;
   } = {},
@@ -313,6 +314,9 @@ async function actorFixture(
     ...(options.createRunProviderSnapshot === undefined
       ? {}
       : { createRunProviderSnapshot: options.createRunProviderSnapshot }),
+    ...(options.onRunProviderSnapshotRejected === undefined
+      ? {}
+      : { onRunProviderSnapshotRejected: options.onRunProviderSnapshotRejected }),
     ...(options.onFault === undefined ? {} : { onFault: options.onFault }),
     ...(options.onRunFailureDiagnostic === undefined
       ? {}
@@ -360,6 +364,22 @@ describe("SessionActor", () => {
       }),
     ).rejects.toThrow("recovery read failed");
     expect(storage.closeCalls).toBe(1);
+  });
+
+  it("releases a provider snapshot reservation when durable message acceptance fails", async () => {
+    const rejectedRunIds: string[] = [];
+    const { actor, storage } = await actorFixture("snapshotReject", {
+      createRunProviderSnapshot: () => ({ providerId: "fake", providerConfig: {} }),
+      onRunProviderSnapshotRejected: (runId) => {
+        rejectedRunIds.push(runId);
+      },
+    });
+    vi.spyOn(storage, "acceptCommand").mockRejectedValueOnce(new Error("acceptance rejected"));
+
+    await expect(actor.submitMessage(message(actor.sessionId, "cmd_snapshotReject")))
+      .rejects.toThrow("acceptance rejected");
+    expect(rejectedRunIds).toEqual([expect.stringMatching(/^run_snapshotReject/u)]);
+    await actor.shutdown();
   });
 
   it("does not block its mailbox on an active task and queues follow-ups in order", async () => {

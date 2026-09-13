@@ -17,6 +17,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   color: inherit;
   font: inherit;
@@ -36,6 +37,7 @@ button:hover:not(:disabled) {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
   outline: 3px solid #62a9ff;
   outline-offset: 2px;
@@ -340,6 +342,50 @@ label {
   margin: auto;
   padding: 2rem;
   text-align: center;
+}
+
+.provider-panel {
+  margin: 0.75rem 1rem 0;
+  border: 1px solid #253344;
+  border-radius: 0.5rem;
+  padding: 0.65rem;
+  background: #101822;
+}
+
+.provider-panel summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.provider-panel__create,
+.provider-panel__management,
+.provider-panel__default {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.provider-panel input,
+.provider-panel select {
+  min-width: 10rem;
+  border: 1px solid #385272;
+  border-radius: 0.4rem;
+  background: #0b0f14;
+  padding: 0.5rem;
+}
+
+.provider-panel__list {
+  margin: 0.75rem 0;
+  padding-left: 1.25rem;
+}
+
+.provider-panel__management label,
+.provider-panel__default label {
+  display: grid;
+  gap: 0.25rem;
+  color: #aab8ca;
+  font-size: 0.85rem;
 }
 
 @media (max-width: 760px) {

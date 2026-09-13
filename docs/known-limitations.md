@@ -1,13 +1,15 @@
-# Wi v0.1 known limitations
+# Wi v0.1 and v0.2 Milestone 11 known limitations
 
-These are intentional first-vertical-slice boundaries, not hidden roadmap promises.
+These are intentional implemented-slice boundaries, not hidden roadmap promises.
 
 ## Provider and model
 
-- The only provider is deterministic fake.
-- There are no OpenAI Platform calls or API-key configuration.
+- Provider execution remains deterministic and fake/no-network.
+- There are no OpenAI Platform calls or live endpoint probes.
 - There is no ChatGPT/Codex OAuth adapter.
-- There is no provider-connection catalog, provider credential store, multiple-account management, connection-specific model discovery, provider-state persistence, or prompt-cache telemetry.
+- Milestone 11 includes the nonsecret provider-connection catalog, file/environment `CredentialStore`, explicit future-run selection, immutable run snapshots, lifecycle recovery, and browser management.
+- File API keys can be provisioned and stored locally, but they are consumed only by the deterministic no-network fixture in this milestone; there is no live OpenAI API-key transport.
+- There is no live connection-specific model discovery, provider-state persistence, or prompt-cache telemetry.
 - Wi does not invoke or fall back to `codex app-server`.
 - There is no automatic provider, model, endpoint, account, workspace, authentication-mode, transport, or billing switch.
 
@@ -62,15 +64,14 @@ These are intentional first-vertical-slice boundaries, not hidden roadmap promis
 - Browser E2E targets Chromium; cross-browser compatibility is not a v0.1 release gate.
 - The final acceptance uses deterministic fake provider scenarios and test-only inspection controls; it does not validate any real provider or real host tool.
 
-## Planned v0.2 work (not implemented)
+## Remaining planned v0.2 work
 
-The accepted [v0.2 provider-integration plan](plans/v0.2-openai-provider-integration.md) and [provider-connections architecture](architecture/v0.2-provider-connections.md) require later milestones to add, in order:
+Milestone 11 implements isolated provider connections, explicit selection, and the file/environment `CredentialStore` without network access. The accepted [v0.2 provider-integration plan](plans/v0.2-openai-provider-integration.md) and [provider-connections architecture](architecture/v0.2-provider-connections.md) require later milestones to add, in order:
 
-- isolated multiple provider connections, explicit selection, and a file/environment `CredentialStore` in Milestone 11;
 - OpenAI Platform Responses HTTP/SSE in Milestone 12;
 - ChatGPT/Codex multi-account OAuth in Milestone 13;
 - connection-scoped provider state, caching metrics, and provider WebSocket optimization in Milestone 14;
 - telemetry collection and an explicit automatic-routing go/no-go gate in Milestone 15;
 - real projects/tools and project services only in Milestones 16–17.
 
-None of that behavior is present in the released v0.1 product. Future implementation must preserve the established provider boundary, backend ownership, durable event/tool semantics, local security rules, explicit account/billing identity, and no-fallback decisions. Automatic routing remains optional after its named gate; it is not a current capability or presumed v0.2 requirement.
+None of the Milestone 12–17 behavior is present in the Milestone 11 candidate or released v0.1 product. Future implementation must preserve the established provider boundary, backend ownership, durable event/tool semantics, local security rules, explicit account/billing identity, and no-fallback decisions. Automatic routing remains optional after its named gate; it is not a current capability or presumed v0.2 requirement.

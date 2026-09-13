@@ -2,6 +2,12 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { JsonLogger, WiRuntime, WiServer } from "../../../apps/server/dist/index.js";
+import {
+  CredentialProvisioner,
+  FileCredentialStore,
+  StoredCredential,
+  initializeCredentialRoots,
+} from "../../../packages/credentials/dist/index.js";
 import { FakeProviderAdapter, fakeProviderGateLabel } from "../../../packages/provider-fake/dist/index.js";
 import { MAXIMUM_BOOTSTRAP_SESSIONS } from "../../../packages/protocol/dist/index.js";
 import { sessionWorkerPoolForTest } from "../../../packages/storage/dist/testing.js";
@@ -13,8 +19,35 @@ const [
   fixedPortArgument,
   frameMaximumDepthArgument,
   replayLiveEventsArgument,
+  recoveryModeArgument,
+  providerScenarioArgument,
 ] = process.argv.slice(2);
 if (homeDirectory === undefined || typeof process.send !== "function") process.exit(64);
+const credentialStateRoot = `${homeDirectory}-credential-state`;
+const credentialRoot = join(credentialStateRoot, "wi", "credentials");
+const stagingRoot = join(credentialStateRoot, "wi", "credential-staging");
+if (recoveryModeArgument === "recovery") {
+  await initializeCredentialRoots({
+    wiHome: homeDirectory,
+    credentialRoot,
+    stagingRoot,
+  });
+  await new FileCredentialStore(credentialRoot).put(
+    "credref_e2eRecovery",
+    new StoredCredential({
+      version: 1,
+      envelopeId: "envl_e2eRecovery",
+      connectionId: "pconn_e2eRecovery",
+      providerId: "openai_platform",
+      authMode: "api_key",
+      generation: 2,
+      updatedAtMs: 10,
+      identity: { status: "unverified" },
+      credential: { type: "api_key", apiKey: "e2e-recovery-private-key" },
+    }),
+  );
+}
+
 const optionalNumber = (value) =>
   value === undefined || value === "-" ? undefined : Number(value);
 const frameMaximumBytes = optionalNumber(frameMaximumBytesArgument);
@@ -45,10 +78,16 @@ logger.info("e2e_secret_probe", {
   cookie: auditSecret,
 });
 const providerRequests = [];
+const providerControllersByRun = new Map();
+const releasedProviderRuns = new Set();
 const acceptedMessages = new Map();
 const acknowledgementGates = new Map();
 const blockedAcknowledgementCommands = new Set();
 const beforeRouteGates = new Map();
+const lifecyclePrepareGates = new Map();
+let recoveryBeforeRouteArmed = false;
+let lifecyclePrepareArmed = false;
+let armedProviderFailpoint = null;
 const blockedBeforeRouteCommands = new Set();
 const replayGates = new Map();
 const armedReplaySessions = new Set();
@@ -58,9 +97,23 @@ let approvalAcknowledgementArmed = false;
 let approvalRaceArmed = false;
 let routedCommandCount = 0;
 
+const dynamicProviderFailpoints = {
+  name: "after_recovery_admission",
+  exitCode: 199,
+  is: (name) => armedProviderFailpoint === name,
+  matches: (name) => armedProviderFailpoint === name,
+  takeRunIdForCommand: () => null,
+  hit: (name) => {
+    if (armedProviderFailpoint !== name) return;
+    armedProviderFailpoint = null;
+    process.kill(process.pid, "SIGKILL");
+  },
+};
+
 class E2EProvider extends FakeProviderAdapter {
   async *stream(request, context, signal) {
     providerRequests.push(request);
+    providerControllersByRun.set(request.runId, this.controller);
     send({
       type: "provider-request",
       runId: request.runId,
@@ -99,10 +152,56 @@ class E2EProvider extends FakeProviderAdapter {
 }
 
 const provider = new E2EProvider();
+const providerConnectionFixtureProvider = new E2EProvider({ id: "openai_platform" });
 const runtime = new WiRuntime({
   homeDirectory,
   logger,
+  credentialRoots: { credentialRoot, stagingRoot },
   provider,
+  ...(process.env.WI_E2E_PROVIDER_CONNECTION_FIXTURE === "1"
+    ? {
+        providerConnectionFixture: {
+          provider: providerConnectionFixtureProvider,
+          ...(providerScenarioArgument === undefined || providerScenarioArgument === "-"
+            ? {}
+            : { providerConfiguration: { scenario: providerScenarioArgument } }),
+          afterLifecyclePrepare: async (operationKind, commandId, connectionId) => {
+            if (!lifecyclePrepareArmed || !["replace", "enable"].includes(operationKind)) return;
+            lifecyclePrepareArmed = false;
+            send({ type: "lifecycle-prepare-blocked", commandId, connectionId });
+            await new Promise((resolve) => lifecyclePrepareGates.set(commandId, resolve));
+          },
+          capabilitiesForConnection: (connection) => {
+            const modelSuffix = connection.displayName.includes("Model B") ? "b" : "a";
+            return {
+              version: 1,
+              connectionId: connection.connectionId,
+              providerId: connection.providerId,
+              authMode: connection.authMode,
+              capabilitiesVersion: `capver_e2e_${modelSuffix}`,
+              models: [{
+                modelId: `fixture-model-${modelSuffix}`,
+                label: `Fixture model ${modelSuffix.toUpperCase()}`,
+                reasoningEfforts: ["none"],
+                reasoningSummary: false,
+                tools: true,
+                transports: ["no_network_fixture"],
+              }],
+              promptCaching: false,
+              usage: false,
+              opaqueState: false,
+              compaction: false,
+              retrievalSource: "server_fixture",
+              retrievedAtMs: 1,
+              status: "current",
+            };
+          },
+        },
+      }
+    : {}),
+  ...(process.env.WI_E2E_PROVIDER_CONNECTION_FIXTURE === "1"
+    ? { testFailpoints: dynamicProviderFailpoints }
+    : {}),
   toolExecutor: new ToolExecutor({
     onExecutionStart: ({ sessionId, runId, callId }) => {
       appendFileSync(
@@ -123,6 +222,9 @@ const runtime = new WiRuntime({
     return { scenario: "plain-text" };
   },
 });
+if (process.env.WI_E2E_REVALIDATE_INITIAL === "1") {
+  delete process.env.WI_E2E_REVALIDATE_KEY;
+}
 const server = new WiServer({
   runtime,
   port: fixedPort ?? 0,
@@ -151,6 +253,18 @@ const server = new WiServer({
     commandHooks: {
       beforeRoute: async (command) => {
         routedCommandCount += 1;
+        if (command.method.startsWith("providerConnection.")) {
+          send({
+            type: "provider-command-routed",
+            method: command.method,
+            commandId: command.commandId,
+          });
+        }
+        if (command.method === "providerConnection.recover" && recoveryBeforeRouteArmed) {
+          recoveryBeforeRouteArmed = false;
+          send({ type: "recovery-before-route-blocked", commandId: command.commandId });
+          await new Promise((resolve) => beforeRouteGates.set(command.commandId, resolve));
+        }
         if (
           command.method === "message.submit" &&
           command.params.text.startsWith("[before-route]")
@@ -216,6 +330,7 @@ async function close() {
   for (const gates of [
     acknowledgementGates,
     beforeRouteGates,
+    lifecyclePrepareGates,
     replayGates,
     approvalAcknowledgementGates,
     approvalRaceGates,
@@ -237,6 +352,30 @@ process.on("message", (message) => {
   if (message === null || typeof message !== "object") return;
   void (async () => {
     switch (message.type) {
+      case "restore-provider-environment": {
+        if (typeof message.requestId !== "string") {
+          throw new Error("Provider environment restore request is invalid");
+        }
+        process.env.WI_E2E_REVALIDATE_KEY = "e2e-restored-environment-value";
+        send({ type: "provider-environment-restored", requestId: message.requestId });
+        return;
+      }
+      case "stage-provider-key": {
+        if (typeof message.requestId !== "string" || typeof message.label !== "string") {
+          throw new Error("Provider stage request is invalid");
+        }
+        const staged = await new CredentialProvisioner(stagingRoot).stageApiKey(
+          "openai_platform",
+          "api_key",
+          `e2e-${message.label}-private-key`,
+        );
+        send({
+          type: "provider-key-staged",
+          requestId: message.requestId,
+          provisioningRef: staged.provisioningRef,
+        });
+        return;
+      }
       case "disconnect":
         send({
           type: "disconnected",
@@ -250,6 +389,24 @@ process.on("message", (message) => {
       case "release-ack": {
         const release = acknowledgementGates.get(message.commandId);
         acknowledgementGates.delete(message.commandId);
+        release?.();
+        return;
+      }
+      case "arm-recovery-before-route":
+        recoveryBeforeRouteArmed = true;
+        send({ type: "recovery-before-route-armed", requestId: message.requestId });
+        return;
+      case "arm-provider-failpoint":
+        armedProviderFailpoint = message.name;
+        send({ type: "provider-failpoint-armed", requestId: message.requestId, name: message.name });
+        return;
+      case "arm-lifecycle-prepare":
+        lifecyclePrepareArmed = true;
+        send({ type: "lifecycle-prepare-armed", requestId: message.requestId });
+        return;
+      case "release-lifecycle-prepare": {
+        const release = lifecyclePrepareGates.get(message.commandId);
+        lifecyclePrepareGates.delete(message.commandId);
         release?.();
         return;
       }
@@ -299,10 +456,15 @@ process.on("message", (message) => {
       case "release-provider": {
         const scenario = message.gate === "partial" ? "partial-tool-call-without-terminal" : "slow-stream";
         for (const request of providerRequests) {
-          if (request.providerConfig?.scenario !== scenario) continue;
+          if (
+            request.providerConfig?.scenario !== scenario ||
+            releasedProviderRuns.has(request.runId)
+          ) continue;
           const label = fakeProviderGateLabel(request.runId, message.gate);
-          await provider.controller.waitUntilBlocked(label);
-          provider.controller.release(label);
+          const controller = providerControllersByRun.get(request.runId) ?? provider.controller;
+          await controller.waitUntilBlocked(label);
+          controller.release(label);
+          releasedProviderRuns.add(request.runId);
         }
         send({ type: "provider-released", requestId: message.requestId });
         return;
@@ -388,6 +550,27 @@ process.on("message", (message) => {
           count: routedCommandCount,
         });
         return;
+      case "provider-request-count":
+        send({
+          type: "provider-request-count",
+          requestId: message.requestId,
+          count: providerRequests.length,
+        });
+        return;
+      case "provider-operation": {
+        const operation = await runtime.storage.catalog.getProviderLifecycleOperation(
+          message.commandId,
+        );
+        send({
+          type: "provider-operation",
+          requestId: message.requestId,
+          phase: operation?.phase,
+          targetConnectionId: operation?.targetConnectionId,
+          result: operation?.result,
+          failureCode: operation?.failureCode ?? null,
+        });
+        return;
+      }
       case "accepted-message":
         send({
           type: "accepted-message",
